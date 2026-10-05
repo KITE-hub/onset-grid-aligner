@@ -37,19 +37,19 @@ python -m pip install -r requirements.txt
 BPM を指定して解析 (--bpm):
 
 ```bash
-python src/onset_grid_offset.py input.wav --bpm 120
+python src/onset_grid_aligner.py input.wav --bpm 120
 ```
 
 BPM を自動推定:
 
 ```bash
-python src/onset_grid_offset.py input.wav
+python src/onset_grid_aligner.py input.wav
 ```
 
 例: 1/4 拍単位ではなく 1/8 拍単位のグリッドで評価 (--subdivision):
 
 ```bash
-python src/onset_grid_offset.py input.wav --bpm 120 --subdivision 8
+python src/onset_grid_aligner.py input.wav --bpm 120 --subdivision 8
 ```
 
 主なオプション:

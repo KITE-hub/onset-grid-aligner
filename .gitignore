@@ -18,4 +18,6 @@ env/
 *.aiff
 *.ogg
 *.wma
+*.csv
+*.bat
 batch/
