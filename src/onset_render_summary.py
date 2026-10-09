@@ -12,9 +12,6 @@ from onset_groups import GroupAnalysis
 from onset_labels import LABEL_KICK, LABEL_OTHER
 from onset_timing import TempoMap
 
-DISPLAY_BIN_MS = 3.0
-DISPLAY_WIDTH = 40
-
 
 def describe(group: GroupAnalysis, period: float) -> list[str]:
     offsets = group.offsets_ms
@@ -26,20 +23,6 @@ def describe(group: GroupAnalysis, period: float) -> list[str]:
         f"  主クラスタ中央値 {signed(group.phase_ms)} ms (MAD {group.spread_ms:.2f} ms, n={group.cluster_count})",
         f"  全体中央値(参考) {signed(median)} ms (四分位幅 {q75 - q25:.2f} ms)",
         f"  音源を遅らせる量 {signed(-group.phase_ms)} ms / グリッド開始オフセット {signed(group.phase_ms)} ms",
-    ]
-
-
-def render_histogram(group: GroupAnalysis, period: float) -> list[str]:
-    half = period / 2.0
-    edges = np.arange(
-        group.center_ms - half, group.center_ms + half + DISPLAY_BIN_MS, DISPLAY_BIN_MS
-    )
-    counts, _ = np.histogram(group.offsets_ms, bins=edges)
-    labels = wrap_symmetric(edges[:-1], period)
-    peak = max(int(counts.max()), 1)
-    return [
-        f"  {label:+7.1f} | {'#' * round(DISPLAY_WIDTH * count / peak)} {count}"
-        for label, count in zip(labels, counts)
     ]
 
 

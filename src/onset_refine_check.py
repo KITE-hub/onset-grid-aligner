@@ -51,10 +51,16 @@ def refine_members(
     analysis: Analysis, selected: Heads, kick_ms: np.ndarray, period: float
 ) -> np.ndarray:
     if analysis.reference is not None:
-        return analysis.reference.groups[analysis.reference.chosen].members
+        return analysis.reference.pool.members
     residual = event_residuals(selected.heads_ms, selected.peaks_ms, analysis, period)
     keep = primary_keep_mask(selected.heads_ms, kick_ms, analysis.primary.label)
     return np.flatnonzero(keep & (np.abs(residual) < cluster_radius(period)))
+
+
+def refine_alignment(analysis: Analysis, members: np.ndarray) -> np.ndarray:
+    if analysis.reference is None:
+        return np.zeros(members.size)
+    return analysis.reference.pool.shifts_ms[members]
 
 
 def within_radius(residuals: np.ndarray) -> np.ndarray:
@@ -77,6 +83,7 @@ def refine_check(
     members = refine_members(analysis, selected, kick_ms, period)
     if members.size < MIN_ONSETS:
         return None
+    alignment = refine_alignment(analysis, members)
     times_ms = real.peaks_ms[members]
     shift = selected.peaks_ms[members] - times_ms
     refined = refine_heads(samples, sample_rate, times_ms, config.head_level)
@@ -84,7 +91,9 @@ def refine_check(
         return None
     warped_ms = times_ms + shift
     combined = within_radius(
-        event_residuals(refined.heads_ms + shift, warped_ms, analysis, period)
+        event_residuals(
+            refined.heads_ms + shift - alignment, warped_ms, analysis, period
+        )
     )
     if combined.size < MIN_ONSETS:
         return None
@@ -92,7 +101,9 @@ def refine_check(
     spread = float(np.median(np.abs(combined - shift)))
     bands = []
     for (low, high), heads in zip(refined.bands, refined.band_heads_ms):
-        residual = within_radius(event_residuals(heads + shift, warped_ms, analysis, period))
+        residual = within_radius(
+            event_residuals(heads + shift - alignment, warped_ms, analysis, period)
+        )
         if residual.size >= MIN_ONSETS:
             bands.append(RefineBand(low, high, float(np.median(residual)), residual.size))
     return RefineCheck(

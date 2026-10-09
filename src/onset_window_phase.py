@@ -152,14 +152,17 @@ def window_standard_error_ms(residuals: np.ndarray | None) -> float:
 
 
 def estimate_drift(
-    heads_ms: np.ndarray, windows: WindowPhases | None, config: AnalysisConfig
+    heads_ms: np.ndarray,
+    windows: WindowPhases | None,
+    config: AnalysisConfig,
+    weights: np.ndarray | None = None,
 ) -> DriftFit | None:
     if config.drift_window_sec <= 0.0:
         return None
     period = config.period_ms
     direct = fit_direct(
         heads_ms,
-        np.ones(heads_ms.size),
+        np.ones(heads_ms.size) if weights is None else weights,
         period,
         cluster_radius(period),
         config.drift_window_sec * 1000.0,

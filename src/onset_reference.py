@@ -8,6 +8,7 @@ from scipy import ndimage, signal
 from onset_common import wrap_symmetric
 from onset_config import (
     AnalysisConfig,
+    REFERENCE_ALL,
     REFERENCE_FAST,
     REFERENCE_MIXED,
     REFERENCE_SLOW,
@@ -61,9 +62,25 @@ class PhaseGroup:
 
 
 @dataclass(frozen=True)
+class ReferencePool:
+    used: tuple[int, ...]
+    members: np.ndarray
+    shifts_ms: np.ndarray
+    weights: np.ndarray
+    anchor_ms: float
+    gap_ms: float
+    span_ms: float
+    spread_ms: float
+
+    @property
+    def count(self) -> int:
+        return int(self.members.size)
+
+
+@dataclass(frozen=True)
 class ReferenceEstimate:
     groups: tuple[PhaseGroup, ...]
-    chosen: int
+    pool: ReferencePool
     windows: WindowPhases | None
     window_counts: np.ndarray | None
     drift: DriftFit | None
@@ -138,20 +155,56 @@ def build_phase_groups(
     return tuple(groups)
 
 
-def choose_group(groups: tuple[PhaseGroup, ...], rule: str) -> int | None:
+def eligible_groups(groups: tuple[PhaseGroup, ...]) -> list[int]:
     grouped = sum(group.count for group in groups)
-    eligible = [
+    return [
         index
         for index, group in enumerate(groups)
         if group.count >= GROUP_MIN_EVENTS and group.count >= GROUP_MIN_SHARE * grouped
     ]
+
+
+def choose_groups(groups: tuple[PhaseGroup, ...], rule: str) -> tuple[int, ...]:
+    eligible = eligible_groups(groups)
     if not eligible:
-        return None
+        return ()
+    if rule == REFERENCE_ALL:
+        return tuple(eligible)
     if rule == REFERENCE_FAST:
-        return min(eligible, key=lambda index: groups[index].gap_ms)
+        return (min(eligible, key=lambda index: groups[index].gap_ms),)
     if rule == REFERENCE_SLOW:
-        return max(eligible, key=lambda index: groups[index].gap_ms)
-    return max(eligible, key=lambda index: groups[index].count)
+        return (max(eligible, key=lambda index: groups[index].gap_ms),)
+    return (max(eligible, key=lambda index: groups[index].count),)
+
+
+def pool_groups(
+    groups: tuple[PhaseGroup, ...],
+    used: tuple[int, ...],
+    offsets: np.ndarray,
+    gaps_ms: np.ndarray,
+    period: float,
+) -> ReferencePool:
+    chosen = [groups[index] for index in used]
+    heads = np.array([group.head_ms for group in chosen])
+    relative = wrap_symmetric(heads - heads[0], period)
+    anchor = float(heads[0] + relative.mean())
+    shifts = np.zeros(offsets.size)
+    weights = np.zeros(offsets.size)
+    for group, head in zip(chosen, heads):
+        shifts[group.members] = wrap_symmetric(head - anchor, period)
+        weights[group.members] = 1.0 / group.count
+    members = np.flatnonzero(weights)
+    aligned = offsets[members] - gaps_ms[members] - shifts[members]
+    return ReferencePool(
+        used,
+        members,
+        shifts,
+        weights,
+        anchor,
+        float(np.mean([group.gap_ms for group in chosen])),
+        float(np.ptp(relative)),
+        float(np.median(np.abs(aligned - np.median(aligned)))),
+    )
 
 
 def group_window_counts(
@@ -165,20 +218,21 @@ def group_window_counts(
 def reference_windows(
     peaks_ms: np.ndarray,
     offsets: np.ndarray,
+    gaps_ms: np.ndarray,
     groups: tuple[PhaseGroup, ...],
-    chosen: int,
+    pool: ReferencePool,
     window_ms: float,
     window_count: int,
 ) -> tuple[WindowPhases | None, np.ndarray | None]:
-    group = groups[chosen]
-    times = peaks_ms[group.members]
-    values = offsets[group.members]
+    members = pool.members
+    times = peaks_ms[members]
+    values = offsets[members] - gaps_ms[members] - pool.shifts_ms[members]
     slices = window_slices(times, window_ms, window_count)
     kept = slices.counts >= GROUP_MIN_WINDOW_EVENTS
     if not kept.any():
         return None, None
     bounds = list(zip(slices.lows[kept], slices.highs[kept]))
-    phases = np.array([np.median(values[low:high]) for low, high in bounds]) - group.gap_ms
+    phases = np.array([np.median(values[low:high]) for low, high in bounds])
     centers = np.array([np.median(times[low:high]) for low, high in bounds])
     starts = slices.starts_ms[kept]
     counts = np.stack(
@@ -195,18 +249,19 @@ def reference_sensitivity(
     detection: Detection,
     selected: Heads,
     offsets: np.ndarray,
-    group: PhaseGroup,
+    pool: ReferencePool,
     period: float,
 ) -> tuple[tuple[float, float], ...]:
-    group_peaks = selected.peaks_ms[group.members]
+    pooled_peaks = selected.peaks_ms[pool.members]
     results = []
     for level in SENSITIVITY_LEVELS:
         heads = detection.heads[level]
-        inside = np.isin(heads.peaks_ms, group_peaks)
+        inside = np.isin(heads.peaks_ms, pooled_peaks)
         if not inside.any():
             continue
         indices = np.searchsorted(selected.peaks_ms, heads.peaks_ms[inside])
-        phases = offsets[indices] - (heads.peaks_ms[inside] - heads.heads_ms[inside])
+        gaps = heads.peaks_ms[inside] - heads.heads_ms[inside]
+        phases = offsets[indices] - gaps - pool.shifts_ms[indices]
         results.append((level, float(wrap_symmetric(np.median(phases), period))))
     return tuple(results)
 
@@ -234,22 +289,36 @@ def estimate_reference(
         return None
     if selected.peaks_ms.size < MIN_ONSETS:
         return None
+    gaps_ms = selected.peaks_ms - selected.heads_ms
     trend = group_trend_ms(selected.peaks_ms, mixed_drift)
     offsets, center = recentered_offsets(selected.peaks_ms - trend, period)
-    groups = build_phase_groups(offsets, selected.peaks_ms - selected.heads_ms, center)
-    chosen = choose_group(groups, config.reference_group)
-    if chosen is None:
+    groups = build_phase_groups(offsets, gaps_ms, center)
+    used = choose_groups(groups, config.reference_group)
+    if not used:
         return None
+    pool = pool_groups(groups, used, offsets, gaps_ms, period)
     windows, window_counts = (None, None)
     if config.drift_window_sec > 0.0:
         window_ms, window_count = event_window_layout(
             selected.peaks_ms, config.drift_window_sec
         )
         windows, window_counts = reference_windows(
-            selected.peaks_ms, offsets + trend, groups, chosen, window_ms, window_count
+            selected.peaks_ms,
+            offsets + trend,
+            gaps_ms,
+            groups,
+            pool,
+            window_ms,
+            window_count,
         )
-    drift = estimate_drift(selected.heads_ms[groups[chosen].members], windows, config)
-    fallback_ms = float(wrap_symmetric(groups[chosen].head_ms, period))
+    members = pool.members
+    drift = estimate_drift(
+        selected.heads_ms[members] - pool.shifts_ms[members],
+        windows,
+        config,
+        pool.weights[members],
+    )
+    fallback_ms = float(wrap_symmetric(pool.anchor_ms, period))
     conclusion_ms, uses_regression = resolve_phase(drift, fallback_ms, period)
     support = event_support(
         selected,
@@ -261,7 +330,7 @@ def estimate_reference(
     )
     return ReferenceEstimate(
         groups,
-        chosen,
+        pool,
         windows,
         window_counts,
         drift,
@@ -270,5 +339,5 @@ def estimate_reference(
         support.stability,
         support.grid_fit,
         float(wrap_symmetric(conclusion_ms - reference_ms, period)),
-        reference_sensitivity(detection, selected, offsets, groups[chosen], period),
+        reference_sensitivity(detection, selected, offsets, pool, period),
     )

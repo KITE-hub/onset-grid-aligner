@@ -118,7 +118,7 @@ def reference_check_basis(
         LABEL_ALL,
         reference.drift,
         config,
-        reference.groups[reference.chosen].gap_ms,
+        reference.pool.gap_ms,
         reference.conclusion_ms,
         reference.uses_regression,
     )

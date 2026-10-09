@@ -4,6 +4,7 @@ from onset_analysis import Analysis
 from onset_common import wrap_symmetric
 from onset_config import (
     AnalysisConfig,
+    REFERENCE_ALL,
     REFERENCE_FAST,
     REFERENCE_LARGEST,
     REFERENCE_MIXED,
@@ -16,6 +17,7 @@ from onset_phase import is_stable_value, MIN_GRID_FIT, STABLE_WINDOW_RATIO
 from onset_window_phase import WindowPhases
 
 REFERENCE_DESCRIPTIONS = {
+    REFERENCE_ALL: "条件を満たす全群を等重みで統合",
     REFERENCE_LARGEST: "件数が最大の群",
     REFERENCE_FAST: "立ち上がりが最も速い群",
     REFERENCE_SLOW: "立ち上がりが最も遅い群",
@@ -95,7 +97,7 @@ def render_reference(analysis: Analysis, config: AnalysisConfig) -> list[str]:
     for index, group in enumerate(reference.groups):
         marker = (
             f" <- 基準({REFERENCE_DESCRIPTIONS[config.reference_group]})"
-            if index == reference.chosen
+            if index in reference.pool.used
             else ""
         )
         lines.append(
@@ -103,9 +105,14 @@ def render_reference(analysis: Analysis, config: AnalysisConfig) -> list[str]:
             f" / 頭 {signed(float(wrap_symmetric(group.head_ms, period)))} ms"
             f" / 遅れ {group.gap_ms:.2f} ms / 件数 {group.count} ({group.count / total * 100:.0f}%){marker}"
         )
-    if len(reference.groups) > 1:
+    if len(reference.pool.used) > 1:
         lines.append(
-            "  群が複数あるため、現行の結論は群の混合値です。件数比が時間で変わると見かけのドリフトが出ます"
+            f"  {len(reference.pool.used)}群を等重みで統合 / 群の頭位相の幅 {reference.pool.span_ms:.2f} ms"
+            "(音源側の系統的な不確かさの目安)"
+        )
+    elif len(reference.groups) > 1:
+        lines.append(
+            "  基準に使わない群があります。群の頭位相の差が系統的な不確かさになります"
         )
     if reference.windows is not None and reference.window_counts is not None:
         lines.append("  時間窓ごとの基準群の頭位相 / 各群の件数")
@@ -122,7 +129,7 @@ def render_reference(analysis: Analysis, config: AnalysisConfig) -> list[str]:
         lines += render_fit(reference.drift, config.bpm, period, end_ms)
     elif reference.windows is not None:
         lines.append("  回帰は不採用(窓数不足、または窓ごとの位相が一貫しないため)")
-    basis = "回帰の曲中央時点の値" if reference.uses_regression else "基準群の頭位相の中央値"
+    basis = "回帰の曲中央時点の値" if reference.uses_regression else "基準群の頭位相(群ごとの中央値の等重み平均)"
     lines += [
         "",
         f"[結論: {LABEL_REFERENCE} / 根拠: {basis}]",

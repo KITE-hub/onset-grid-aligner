@@ -20,7 +20,6 @@ from onset_render_summary import (
     render_estimate,
     render_group_gap,
     render_header,
-    render_histogram,
     render_sensitivity,
 )
 from onset_timing import TempoMap
@@ -43,7 +42,7 @@ def render_report(
         *render_header(config, period, tempo),
     ]
     for group in analysis.groups.values():
-        lines += describe(group, period) + render_histogram(group, period)
+        lines += describe(group, period)
     lines += render_group_gap(analysis.groups, period)
     lines += render_sensitivity(analysis.sensitivity, period)
     lines += render_drift(analysis, config.bpm)

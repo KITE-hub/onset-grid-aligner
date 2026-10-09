@@ -89,7 +89,6 @@ class Analysis:
             )
             return max(events, window_standard_error_ms(residuals))
         reference = self.reference
-        group = reference.groups[reference.chosen]
         residuals = window_residuals(
             reference.windows,
             reference.drift,
@@ -98,7 +97,7 @@ class Analysis:
             self.period_ms,
         )
         return max(
-            standard_error_ms(group.spread_ms, group.count),
+            standard_error_ms(reference.pool.spread_ms, reference.pool.count),
             window_standard_error_ms(residuals),
         )
 
