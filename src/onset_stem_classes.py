@@ -22,6 +22,8 @@ BAND_NYQUIST_RATIO = 0.45
 KICK_LOW_SHARE = 0.4
 SNARE_MID_SHARE = 0.1
 SHARE_FLOOR = 1e-30
+ATTACK_FLOOR_RATIO = 0.01
+ATTACK_REFERENCE_PERCENTILE = 90.0
 
 
 def window_bounds(
@@ -59,6 +61,14 @@ def band_increments(
         gained = (prefix[after] - prefix[at]) - (prefix[at] - prefix[before])
         increments[:, column] = np.maximum(gained, 0.0)
     return increments
+
+
+def attack_mask(increments: np.ndarray) -> np.ndarray:
+    totals = increments.sum(axis=1)
+    if totals.size == 0:
+        return np.zeros(0, dtype=bool)
+    reference = np.percentile(totals, ATTACK_REFERENCE_PERCENTILE)
+    return totals > ATTACK_FLOOR_RATIO * reference
 
 
 def classify_events(increments: np.ndarray) -> np.ndarray:

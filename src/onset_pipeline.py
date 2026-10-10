@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from onset_analysis import Analysis, analyze
@@ -13,6 +13,7 @@ from onset_detection import detect_attacks, Detection, head_levels
 from onset_kick import attach_kicks, kick_envelope
 from onset_odf import compute_onset_functions
 from onset_refine_check import refine_check, RefineCheck
+from onset_subdivision import choose_subdivision, subdivision_scores
 from onset_warp import make_warp, warped_detection, warped_functions
 
 
@@ -21,7 +22,7 @@ class RunOptions:
     bpm: float | None
     bpm_min: float
     bpm_max: float
-    subdivision: int
+    subdivision: int | None
     low_hz: float
     high_hz: float
     head_level: float
@@ -63,6 +64,19 @@ def resolve_bpm(
     return estimate.bpm, estimate
 
 
+def resolve_subdivision(options: RunOptions, attacks: Detection, bpm: float) -> int:
+    if options.subdivision is not None:
+        return options.subdivision
+    scores = subdivision_scores(
+        attacks,
+        None,
+        lambda subdivision: config_from_options(
+            replace(options, subdivision=subdivision), bpm
+        ),
+    )
+    return choose_subdivision(scores)
+
+
 def run_pipeline(audio_path: Path, options: RunOptions) -> AnalysisRun:
     with readable_audio(audio_path) as readable_path:
         validate_audio(readable_path, options.high_hz)
@@ -79,6 +93,8 @@ def run_pipeline(audio_path: Path, options: RunOptions) -> AnalysisRun:
     )
     functions = compute_onset_functions(samples, sample_rate)
     bpm, estimate = resolve_bpm(options, attacks)
+    subdivision = resolve_subdivision(options, attacks, bpm)
+    options = replace(options, subdivision=subdivision)
     config = config_from_options(options, bpm)
     kick = kick_envelope(samples, sample_rate)
     detection = attach_kicks(attacks, kick, config.period_ms)

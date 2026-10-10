@@ -57,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bpm", type=float, default=None)
     parser.add_argument("--bpm-min", type=float, default=ESTIMATE_MIN_BPM)
     parser.add_argument("--bpm-max", type=float, default=ESTIMATE_MAX_BPM)
-    parser.add_argument("--subdivision", type=int, default=4, choices=SUBDIVISIONS)
+    parser.add_argument("--subdivision", type=int, default=None, choices=SUBDIVISIONS)
     parser.add_argument("--low-hz", type=float, default=DEFAULT_LOW_HZ)
     parser.add_argument("--high-hz", type=float, default=DEFAULT_HIGH_HZ)
     parser.add_argument("--head-level", type=float, default=DEFAULT_HEAD_LEVEL)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-SUBDIVISIONS = (1, 2, 3, 4, 6, 8)
+SUBDIVISIONS = (2, 3, 4, 6, 8)
 MIN_BPM = 30.0
 MAX_BPM = 400.0
 

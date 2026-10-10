@@ -25,6 +25,7 @@ from onset_kick import attach_kicks, kick_envelope, KickEnvelope
 from onset_phase import is_stable_value, MIN_ONSETS, SE_CONFIDENCE_Z, screening_fit
 from onset_reference import ReferenceEstimate
 from onset_refine_check import refine_check, RefineCheck
+from onset_subdivision import choose_subdivision, subdivision_scores
 from onset_warp import (
     GridWarp,
     make_warp,
