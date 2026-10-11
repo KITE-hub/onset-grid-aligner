@@ -6,33 +6,38 @@ from onset_config import AnalysisConfig
 from onset_cross_check import CHECK_AGREE_MS, CrossCheck
 from onset_format import signed
 from onset_phase import SE_CONFIDENCE_Z
+from onset_pipeline import AnalysisRun
 from onset_refine_check import REFINE_RADIUS_MS, RefineCheck
 from onset_window_phase import MIN_DRIFT_WINDOWS
 
 
 def render_cross_check(cross: CrossCheck | None) -> list[str]:
     if cross is None:
-        return []
+        return ["独立検出器による検算: 判定不可（有効な検算データなし）"]
+    descriptions = {
+        "SuperFlux風": "スペクトル差分",
+        "複素領域": "複素スペクトル予測誤差",
+        "HFC": "高域成分の増加量",
+    }
     lines = [
-        "",
-        "[独立検出器による検算(粗い一致確認)]",
-        f"  包絡線の頭から最大傾きまでの遅れ(中央値) {cross.rise_gap_ms:.2f} ms をアタック頭への換算に使用",
+        "独立検出器による検算:",
+        f"  共通補正: 検出器時刻からアタック頭への換算 {signed(-cross.rise_gap_ms)} ms",
     ]
     for check in cross.checks:
         agreed = abs(check.difference_ms) <= CHECK_AGREE_MS
-        verdict = "一致" if agreed else "乖離"
-        basis = "回帰の曲中央時点" if check.uses_regression else "全体"
+        verdict = "一致" if agreed else "不一致"
+        method = descriptions.get(check.name, "独立オンセット検出")
         lines.append(
-            f"  {check.name}: 位相 {signed(check.phase_ms)} ms ({basis})"
-            f" / 頭基準に換算 {signed(check.converted_ms)} ms"
-            f" / 結論との差 {signed(check.difference_ms)} ms"
-            f" / 鋭さ {check.contrast:.1f} -> {verdict}"
+            f"  {check.name}（{method}）: 生オフセット {signed(check.phase_ms)} ms"
+            f" -> 頭補正後 {signed(check.converted_ms)} ms"
+            f" / 主推定との差 {signed(check.difference_ms)} ms"
+            f" / 候補優位差 {check.contrast:.0%} / {verdict}"
         )
-    summary = "一致" if cross.all_agree else "乖離あり(検出ミス・頭の定義・グルーヴの揺れを確認)"
-    lines += [
-        f"  判定: {cross.agreed}/{len(cross.checks)} 検出器が ±{CHECK_AGREE_MS:g} ms 以内 -> {summary}",
-        "  各検出器は窓長に由来する時間定義の差を含むため、数 ms 単位の一致確認であり、それ以下の精度の根拠にはならない",
-    ]
+    summary = "全手法一致" if cross.all_agree else "手法間に差あり"
+    lines.append(
+        f"  検算結果: {cross.agreed}/{len(cross.checks)} 手法が ±{CHECK_AGREE_MS:g} ms以内"
+        f" / 最大乖離 {cross.span_ms:.2f} ms / {summary}"
+    )
     return lines
 
 
@@ -65,17 +70,20 @@ def render_band_check(bands: BandCheck | None, config: AnalysisConfig) -> list[s
     return lines
 
 
-def render_refine(refine: RefineCheck | None, analysis: Analysis) -> list[str]:
+def render_refine(refine: RefineCheck | None, run: AnalysisRun) -> list[str]:
+    analysis = run.analysis
     if refine is None:
         return []
     error95 = SE_CONFIDENCE_Z * refine.standard_error_ms
     lines = [
         "",
         "[局所精密化: 因果フィルタ・複数帯域・サブサンプル補間でグリッド近傍のアタック頭を再測定]",
-        f"  対象 {refine.count} 件(結論から ±{REFINE_RADIUS_MS:g} ms 以内) / MAD {refine.spread_ms:.2f} ms / 統計誤差(95%) ±{error95:.2f} ms",
-        f"  結論 {signed(analysis.final_ms)} ms -> 精密化後 {signed(refine.offset_ms)} ms (差 {signed(refine.shift_ms)} ms)",
-        f"  精密化後の値で合わせる場合に音源を遅らせる量: {signed(0.0 - refine.offset_ms)} ms",
+        f"  対象 {refine.count} 件(既存周期位相から ±{REFINE_RADIUS_MS:g} ms 以内) / MAD {refine.spread_ms:.2f} ms / 統計誤差(95%) ±{error95:.2f} ms",
+        f"  既存のオンセット周期位相 {signed(analysis.conclusion_ms)} ms -> 精密化後 {signed(refine.offset_ms)} ms (差 {signed(refine.shift_ms)} ms)",
     ]
+    lines.append(
+        f"  精密化後の既存周期位相に合わせる参考移動量: {signed(0.0 - refine.offset_ms)} ms"
+    )
     lines += [
         f"  {band.low_hz:g}~{band.high_hz:g} Hz: 差 {signed(band.shift_ms)} ms (n={band.count})"
         for band in refine.bands
@@ -87,7 +95,7 @@ def render_refine(refine: RefineCheck | None, analysis: Analysis) -> list[str]:
 
 
 def render_precision(analysis: Analysis, bands: BandCheck | None) -> list[str]:
-    error95 = SE_CONFIDENCE_Z * analysis.final_standard_error_ms
+    error95 = SE_CONFIDENCE_Z * analysis.uncertainty_ms
     lines = [
         "",
         "[推定精度の目安]",

@@ -25,6 +25,7 @@ MIN_ATTACK_RATIO = 1.5
 class Heads:
     heads_ms: np.ndarray
     peaks_ms: np.ndarray
+    strengths: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -42,10 +43,6 @@ class LocalCap:
 
 @dataclass(frozen=True)
 class Detection:
-    envelope: np.ndarray
-    slope: np.ndarray
-    caps: LocalCap
-    peaks: np.ndarray
     kick_ms: np.ndarray
     sample_rate: int
     heads: dict[float, Heads]
@@ -125,9 +122,17 @@ def attack_peaks(
     return peaks[slope[peaks] >= SLOPE_THRESHOLD_RATIO * caps.at(peaks)]
 
 
+def attack_strengths(
+    slope: np.ndarray, caps: LocalCap, peaks: np.ndarray
+) -> np.ndarray:
+    if peaks.size == 0:
+        return np.empty(0)
+    return np.clip(slope[peaks] / caps.at(peaks), 0.0, 1.0)
+
+
 def heads_ms_from_peaks(
     envelope: np.ndarray, peaks: np.ndarray, sample_rate: int, head_level: float
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     lookback = ms_to_samples(LOOKBACK_MS, sample_rate)
     forward = ms_to_samples(PEAK_WINDOW_MS, sample_rate)
     heads = [
@@ -137,7 +142,7 @@ def heads_ms_from_peaks(
     valid = np.fromiter((head is not None for head in heads), dtype=bool, count=len(heads))
     found = np.fromiter((head for head in heads if head is not None), dtype=float)
     scale = 1000.0 / sample_rate
-    return found * scale, peaks[valid] * scale
+    return found * scale, peaks[valid] * scale, valid
 
 
 def head_levels(head_level: float) -> tuple[float, ...]:
@@ -147,13 +152,17 @@ def head_levels(head_level: float) -> tuple[float, ...]:
 def build_heads(
     envelope: np.ndarray,
     peaks: np.ndarray,
+    strengths: np.ndarray,
     sample_rate: int,
     levels: tuple[float, ...],
 ) -> dict[float, Heads]:
-    return {
-        level: Heads(*heads_ms_from_peaks(envelope, peaks, sample_rate, level))
-        for level in levels
-    }
+    heads = {}
+    for level in levels:
+        heads_ms, peaks_ms, valid = heads_ms_from_peaks(
+            envelope, peaks, sample_rate, level
+        )
+        heads[level] = Heads(heads_ms, peaks_ms, strengths[valid])
+    return heads
 
 
 def detected_heads(
@@ -185,12 +194,9 @@ def detect_attacks(
         block_caps(slope, block, SLOPE_PERCENTILE, CAP_FLOOR_RATIO), block
     )
     peaks = attack_peaks(slope, caps, sample_rate)
+    strengths = attack_strengths(slope, caps, peaks)
     return Detection(
-        envelope,
-        slope,
-        caps,
-        peaks,
         np.empty(0),
         sample_rate,
-        build_heads(envelope, peaks, sample_rate, levels),
+        build_heads(envelope, peaks, strengths, sample_rate, levels),
     )

@@ -6,10 +6,11 @@ from onset_analysis import Analysis
 from onset_bpm_estimate import BpmEstimate, ESTIMATE_MIN_DOMINANCE
 from onset_common import wrap_symmetric
 from onset_config import AnalysisConfig
-from onset_decoder import DecodeInfo, DECODER_EXPLANATIONS, decoder_variants
+from onset_decoder import DECODER_EXPLANATIONS, decoder_variants
 from onset_format import signed
+from onset_grid import COMB_STEPS, GRID_LATTICES, estimate_comb_phase
 from onset_groups import GroupAnalysis
-from onset_labels import LABEL_KICK, LABEL_OTHER
+from onset_pipeline import AnalysisRun
 from onset_timing import TempoMap
 
 
@@ -22,20 +23,6 @@ def describe(group: GroupAnalysis, period: float) -> list[str]:
         f"[{group.label}] n={offsets.size}",
         f"  主クラスタ中央値 {signed(group.phase_ms)} ms (MAD {group.spread_ms:.2f} ms, n={group.cluster_count})",
         f"  全体中央値(参考) {signed(median)} ms (四分位幅 {q75 - q25:.2f} ms)",
-        f"  音源を遅らせる量 {signed(-group.phase_ms)} ms / グリッド開始オフセット {signed(group.phase_ms)} ms",
-    ]
-
-
-def render_group_gap(groups: dict[str, GroupAnalysis], period: float) -> list[str]:
-    other = groups.get(LABEL_OTHER)
-    kick = groups.get(LABEL_KICK)
-    if other is None or kick is None:
-        return []
-    gap = float(wrap_symmetric(kick.phase_ms - other.phase_ms, period))
-    return [
-        "",
-        f"[キックとその他の位相差] キック同時 - 非同時 = {signed(gap)} ms",
-        "  差が大きい場合は、どちらの立ち上がりに合わせるかを判断すること",
     ]
 
 
@@ -51,21 +38,6 @@ def render_sensitivity(
     lines += [f"  head-level {level:.2f}: {signed(phase)} ms" for level, phase in valid]
     lines.append(f"  最大差 {relative.max() - relative.min():.2f} ms")
     return lines
-
-
-def render_conclusion(analysis: Analysis, is_main: bool) -> list[str]:
-    basis = "回帰の曲中央時点の値" if analysis.uses_regression else "主クラスタ中央値"
-    title = (
-        f"[結論: {analysis.primary.label} / 根拠: {basis}]"
-        if is_main
-        else f"[参考: 全オンセットの混合値による結論 / 根拠: {basis}]"
-    )
-    return [
-        "",
-        title,
-        f"  グリッド開始オフセット {signed(analysis.conclusion_ms)} ms",
-        f"  音源を遅らせる量 {signed(-analysis.conclusion_ms)} ms",
-    ]
 
 
 def render_estimate(estimate: BpmEstimate | None) -> list[str]:
@@ -86,37 +58,106 @@ def render_estimate(estimate: BpmEstimate | None) -> list[str]:
     return lines
 
 
-def render_decoder_variants(
-    decode: DecodeInfo | None, conclusion_ms: float, period: float
-) -> list[str]:
+def render_decoder_variants(run: AnalysisRun) -> list[str]:
+    decode = run.decode
     if decode is None:
         return []
-    lines = ["", "[デコーダの遅延補正ごとの結果]", f"  {DECODER_EXPLANATIONS[decode.suffix]}"]
+    lines = ["", "[参考診断: デコーダ遅延の仮定別（上部の補正量を上書きしない）]", f"  {DECODER_EXPLANATIONS[decode.suffix]}"]
+    selected = run.beat.detection.heads[run.config.head_level]
+    base_times_ms = selected.heads_ms
+    weights = np.maximum(selected.strengths, 0.0)
     for variant in decoder_variants(decode):
         shift_ms = (decode.applied_skip - variant.skip_samples) * 1000.0 / decode.sample_rate
-        offset = float(wrap_symmetric(conclusion_ms + shift_ms, period))
+        estimate = estimate_comb_phase(base_times_ms + shift_ms, weights, run.config.layout)
         skipped_ms = variant.skip_samples * 1000.0 / decode.sample_rate
-        marker = " <- [結論]と同じ(本スクリプトのデコード結果)" if variant.skip_samples == decode.applied_skip else ""
-        lines += [
-            f"  {variant.label}: 先頭 {variant.skip_samples} サンプル({skipped_ms:.2f} ms)を削除",
-            f"    グリッド開始オフセット {signed(offset)} ms / 音源を遅らせる量 {signed(-offset)} ms{marker}",
-        ]
+        marker = " <- 現在のデコード補正" if variant.skip_samples == decode.applied_skip else ""
+        lines.append(f"  {variant.label}: 先頭 {variant.skip_samples} サンプル({skipped_ms:.2f} ms)を削除")
+        if estimate is None:
+            lines.append("    固定12位置の補正量を推定できません")
+        else:
+            lines.append(
+                f"    固定12位置の位相 {signed(estimate.phase_ms)} ms / この仮定での参考移動量 {signed(-estimate.phase_ms)} ms{marker}"
+            )
     return lines
 
 
-def render_header(
-    config: AnalysisConfig, period: float, tempo: TempoMap | None
-) -> list[str]:
-    if tempo is None:
-        return [
-            f"BPM {config.bpm:g} / 1拍を{config.subdivision}分割 / グリッド間隔 {period:.3f} ms",
-            "符号: 負 = オンセットがグリッド線より前",
-            f"結果はグリッド間隔の剰余でのみ決まる(±{period:.3f} ms ずらしても一致)。拍頭の位置はDAWで確認すること",
-        ]
+def grid_lines(config: AnalysisConfig) -> list[str]:
+    layout = config.layout
+    diagnostic_fold = (
+        "拍頭候補の参考診断にはBPMを折り返さず使用"
+        if layout.octave == 0
+        else f"拍頭候補の参考診断のみBPMを×{2.0 ** layout.octave:g}で{layout.grid_bpm:.2f} BPMに折返し"
+    )
+    lattices = ",".join(str(value) for value in GRID_LATTICES)
+    steps = ",".join(str(step) for step in COMB_STEPS)
     return [
-        f"テンポマップ {len(tempo.points)} 区間を一括解析 / 基準BPM {config.bpm:g}(最長区間) / 1拍を{config.subdivision}分割 / 基準グリッド間隔 {period:.3f} ms",
-        "各オンセットを、その時刻のテンポマップ上の最寄りグリッド線との残差(実時間 ms)に換算し、全区間をまとめて評価する",
-        "時刻表示はグリッド換算時間で、BPMの異なる区間では実時間と一致しない",
-        "符号: 負 = オンセットがグリッド線より前",
-        "拍頭の位置はDAWで確認すること",
+        f"BPM {config.bpm:g} / 4分音符1拍={layout.comb_beat_ms:.3f} ms, 24ステップ幅={layout.comb_lattice_ms:.3f} ms"
+        f" / 固定線: {lattices}分割の合併(1拍24ステップ中{len(COMB_STEPS)}本: {steps})",
+        "符号: 負 = アタックが最寄りの固定線より前。音源移動量はこの符号と逆",
+        "グリッド開始オフセットは、全アタックに共通する位相シフトを固定12位置への全体適合から推定。個別の最寄り線残差を先に中央値化しない。拍頭候補とVOXの拍子記号は算出に使わない。",
+        f"{diagnostic_fold}。7/8や9/16の小節頭を判定するものではなく、固定12位置のパターンも変更しない。",
     ]
+
+
+def render_header(config: AnalysisConfig, tempo: TempoMap | None) -> list[str]:
+    if tempo is None:
+        return grid_lines(config)
+    return [
+        f"テンポマップ {len(tempo.points)} 区間を一括解析 / 基準BPM {config.bpm:g}(最長区間)",
+        *grid_lines(config),
+        "VOXのテンポマップに合わせて時間軸を正規化し、正規化後の各アタックを基準BPMの固定12位置と照合する",
+        "判定は固定12位置までの時間差に基づき、拍子記号(7/8、9/16など)は補正位相の式に混ぜない",
+    ]
+
+
+def render_recommendation(run: AnalysisRun) -> list[str]:
+    lines = ["", "[補正量]"]
+    if run.offset_ms is None or run.delay_ms is None:
+        lines.extend(["  グリッド開始オフセット: 算出不可", "  音源を遅らせる量: 算出不可"])
+        return lines
+    lines.extend(
+        [
+            f"  グリッド開始オフセット: {signed(run.offset_ms)} ms",
+            f"  音源を遅らせる量: {signed(run.delay_ms)} ms (負なら前にずらす)",
+            "  計算: 全アタックに共通する位相シフトを固定12位置への全体適合から推定。音源移動量は逆符号。",
+        ]
+    )
+    return lines
+
+
+def render_alignment(run: AnalysisRun) -> list[str]:
+    alignment = run.alignment
+    lines = [
+        "",
+        "[参考診断・補正に不使用: BPM拍頭候補]",
+    ]
+    if alignment is None:
+        lines.append("  判定できませんでした。拍頭候補と固定12位置の適合度を診断するためのオンセットが不足しています")
+        return lines
+    verdict = "明瞭" if alignment.beat_decided else "未確定"
+    lines.append(
+        f"  判定: {verdict} (マージン {alignment.beat_margin:.2f}) / 暫定最良候補 {alignment.shift_steps:+d} ステップ"
+    )
+    lines.append(
+        f"  次点の拍頭候補オフセット（参考値）: {signed(alignment.runner_up_ms)} ms"
+    )
+    if not alignment.beat_decided:
+        candidates = alignment.candidate_offsets_ms
+        if candidates:
+            offsets = ", ".join(f"{signed(value)}" for value in candidates)
+            delays = ", ".join(f"{signed(-value)}" for value in candidates)
+            lines.append(f"  拍頭候補オフセット（参考値）: {offsets} ms")
+            lines.append(f"  拍頭候補から換算した移動量（参考値・採用しない）: {delays} ms")
+        else:
+            lines.append("  BPM拍頭候補を絞れませんでした")
+    lines.extend(
+        [
+            "  これらは4分音符単位の拍頭候補であり、記譜上の小節頭や分母音符の拍頭を示しません。音源補正には「音源を遅らせる量」を使用してください。",
+            "",
+            "[適合度の診断: 固定12位置]",
+            f"  固定12位置への適合率: {alignment.comb_fit:.1%}",
+            f"  残差MAD: {alignment.comb_mad_ms:.2f} ms / 対象アタック: {alignment.comb_count} 件",
+            f"  統計誤差の目安 (95%): ±{alignment.comb_se95_ms:.2f} ms",
+        ]
+    )
+    return lines

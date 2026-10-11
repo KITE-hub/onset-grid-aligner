@@ -96,7 +96,7 @@ def band_check(
     )
     kick_entry = phase_entry(
         f"{KICK_LOW_HZ:g}~{KICK_HIGH_HZ:g} Hz キック帯域(独立検出)",
-        warp.times(kick_band_heads(kick, period, level)),
+        warp.times(kick_band_heads(kick, config.grid_beat_ms, level)),
         base.phase_ms,
         period,
     )

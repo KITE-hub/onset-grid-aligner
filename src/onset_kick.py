@@ -13,7 +13,6 @@ from onset_detection import (
     SLOPE_PERCENTILE,
     SLOPE_THRESHOLD_RATIO,
 )
-from onset_labels import LABEL_KICK, LABEL_OTHER
 
 KICK_LOW_HZ = 30.0
 KICK_HIGH_HZ = 120.0
@@ -21,7 +20,7 @@ KICK_SMOOTH_MS = 2.0
 KICK_PEAK_RATIO = 0.5
 KICK_PEAK_PERCENTILE = 99.5
 KICK_MIN_GAP_MS = 120.0
-KICK_GAP_PERIOD_RATIO = 0.6
+KICK_GAP_BEAT_RATIO = 0.15
 KICK_TARGET_RATE_HZ = 2000
 KICK_WINDOW_BEFORE_MS = 15.0
 KICK_WINDOW_AFTER_MS = 35.0
@@ -46,8 +45,12 @@ def kick_envelope(samples: np.ndarray, sample_rate: int) -> KickEnvelope:
     return KickEnvelope(envelope, reduced_rate, height)
 
 
-def kick_peaks_ms(kick: KickEnvelope, period_ms: float) -> np.ndarray:
-    gap_ms = min(KICK_MIN_GAP_MS, KICK_GAP_PERIOD_RATIO * period_ms)
+def kick_gap_ms(beat_ms: float) -> float:
+    return min(KICK_MIN_GAP_MS, KICK_GAP_BEAT_RATIO * beat_ms)
+
+
+def kick_peaks_ms(kick: KickEnvelope, beat_ms: float) -> np.ndarray:
+    gap_ms = kick_gap_ms(beat_ms)
     peaks, _ = signal.find_peaks(
         kick.envelope,
         height=kick.peak_height,
@@ -64,30 +67,13 @@ def kick_coincident_mask(times_ms: np.ndarray, kick_ms: np.ndarray) -> np.ndarra
     return right > left
 
 
-def split_by_kick(
-    heads_ms: np.ndarray, kick_ms: np.ndarray
-) -> tuple[np.ndarray, np.ndarray]:
-    coincident = kick_coincident_mask(heads_ms, kick_ms)
-    return heads_ms[~coincident], heads_ms[coincident]
-
-
-def primary_keep_mask(
-    times_ms: np.ndarray, kick_ms: np.ndarray, label: str
-) -> np.ndarray:
-    if label == LABEL_OTHER:
-        return ~kick_coincident_mask(times_ms, kick_ms)
-    if label == LABEL_KICK:
-        return kick_coincident_mask(times_ms, kick_ms)
-    return np.ones(times_ms.shape, dtype=bool)
-
-
-def kick_band_heads(kick: KickEnvelope, period: float, head_level: float) -> np.ndarray:
+def kick_band_heads(kick: KickEnvelope, beat_ms: float, head_level: float) -> np.ndarray:
     window = ms_to_samples(KICK_SLOPE_WINDOW_MS, kick.sample_rate) | 1
     slope = signal.savgol_filter(kick.envelope, window, 2, deriv=1)
     cap = float(np.percentile(slope, SLOPE_PERCENTILE))
     if cap <= 0.0:
         return np.empty(0)
-    gap_ms = min(KICK_MIN_GAP_MS, KICK_GAP_PERIOD_RATIO * period)
+    gap_ms = kick_gap_ms(beat_ms)
     peaks, _ = signal.find_peaks(
         slope,
         height=SLOPE_THRESHOLD_RATIO * cap,
@@ -97,6 +83,6 @@ def kick_band_heads(kick: KickEnvelope, period: float, head_level: float) -> np.
 
 
 def attach_kicks(
-    detection: Detection, kick: KickEnvelope, period_ms: float
+    detection: Detection, kick: KickEnvelope, beat_ms: float
 ) -> Detection:
-    return replace(detection, kick_ms=kick_peaks_ms(kick, period_ms))
+    return replace(detection, kick_ms=kick_peaks_ms(kick, beat_ms))

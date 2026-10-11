@@ -7,8 +7,7 @@ import numpy as np
 from onset_common import wrap_symmetric
 from onset_config import SENSITIVITY_LEVELS
 from onset_detection import Detection
-from onset_kick import split_by_kick
-from onset_labels import LABEL_ALL, LABEL_KICK, LABEL_OTHER
+from onset_labels import LABEL_ALL
 from onset_phase import (
     concentration_score,
     dominant_cluster,
@@ -48,31 +47,16 @@ def analyze_group(
     )
 
 
-def build_groups(
-    heads_ms: np.ndarray, kick_ms: np.ndarray, period: float
-) -> dict[str, GroupAnalysis]:
-    other_ms, kick_coincident_ms = split_by_kick(heads_ms, kick_ms)
-    candidates = (
-        (LABEL_ALL, heads_ms),
-        (LABEL_OTHER, other_ms),
-        (LABEL_KICK, kick_coincident_ms),
-    )
-    analyzed = (analyze_group(label, values, period) for label, values in candidates)
-    return {group.label: group for group in analyzed if group is not None}
-
-
-def pick_primary(groups: dict[str, GroupAnalysis]) -> GroupAnalysis | None:
-    if not groups:
-        return None
-    return max(groups.values(), key=lambda group: group.concentration)
+def build_groups(heads_ms: np.ndarray, period: float) -> dict[str, GroupAnalysis]:
+    group = analyze_group(LABEL_ALL, heads_ms, period)
+    return {} if group is None else {LABEL_ALL: group}
 
 
 def head_level_sensitivity(
-    detection: Detection, period: float, label: str
+    detection: Detection, period: float
 ) -> tuple[tuple[float, float | None], ...]:
     results = []
     for level in SENSITIVITY_LEVELS:
-        heads_ms = detection.heads[level].heads_ms
-        group = build_groups(heads_ms, detection.kick_ms, period).get(label)
+        group = analyze_group(LABEL_ALL, detection.heads[level].heads_ms, period)
         results.append((level, None if group is None else group.phase_ms))
     return tuple(results)

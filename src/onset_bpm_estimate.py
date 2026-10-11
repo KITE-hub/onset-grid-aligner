@@ -39,13 +39,8 @@ class BpmEstimate:
 
 
 def attack_events(detection: Detection) -> OnsetEvents:
-    default_heads = detection.heads[DEFAULT_HEAD_LEVEL]
-    heads_ms, peaks_ms = default_heads.heads_ms, default_heads.peaks_ms
-    if heads_ms.size == 0 or not detection.caps.usable:
-        return OnsetEvents(np.empty(0), np.empty(0))
-    indices = np.round(peaks_ms * detection.sample_rate / 1000.0).astype(int)
-    strengths = np.clip(detection.slope[indices] / detection.caps.at(indices), 0.0, 1.0)
-    return OnsetEvents(heads_ms, strengths)
+    heads = detection.heads[DEFAULT_HEAD_LEVEL]
+    return OnsetEvents(heads.heads_ms, heads.strengths)
 
 
 def onset_spectrum(events: OnsetEvents) -> tuple[np.ndarray, np.ndarray]:

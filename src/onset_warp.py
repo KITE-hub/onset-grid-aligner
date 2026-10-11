@@ -4,25 +4,30 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from onset_config import AnalysisConfig, MAX_BPM, MIN_BPM
+from onset_config import AnalysisConfig
 from onset_detection import Detection, Heads
+from onset_grid import estimate_comb_phase
 from onset_odf import OnsetFunction
-from onset_phase import circular_mode, MIN_ONSETS
+from onset_phase import MIN_ONSETS
 from onset_timing import MS_PER_MINUTE, TempoMap
+
+
+ANCHOR_BOUNDARY_BEAT_RATIO = 0.5
+BPM_MATCH_TOLERANCE = 1e-6
 
 
 @dataclass(frozen=True)
 class GridWarp:
     tempo: TempoMap | None = None
-    subdivision: int = 1
+    steps_per_beat: int = 1
     period_ms: float = 0.0
     anchor_ms: float = 0.0
 
     def shifts(self, times_ms: np.ndarray) -> np.ndarray:
         if self.tempo is None:
             return np.zeros(np.shape(times_ms))
-        index = self.tempo.grid_index(times_ms - self.anchor_ms, self.subdivision)
-        return index * self.period_ms - self.tempo.line_ms(index, self.subdivision)
+        index = self.tempo.grid_index(times_ms - self.anchor_ms, self.steps_per_beat)
+        return index * self.period_ms - self.tempo.line_ms(index, self.steps_per_beat)
 
     def times(self, times_ms: np.ndarray) -> np.ndarray:
         return times_ms + self.shifts(times_ms)
@@ -32,31 +37,38 @@ class GridWarp:
 
     def heads(self, heads: Heads) -> Heads:
         shift = self.shifts(heads.peaks_ms)
-        return Heads(heads.heads_ms + shift, heads.peaks_ms + shift)
+        return Heads(heads.heads_ms + shift, heads.peaks_ms + shift, heads.strengths)
 
 
 IDENTITY_WARP = GridWarp()
 
 
-def fold_factor(bpm: float) -> float:
-    factor = 1.0
-    while bpm * factor > MAX_BPM:
-        factor /= 2.0
-    while bpm * factor < MIN_BPM:
-        factor *= 2.0
-    return factor
+def dominant_tempo_times(
+    tempo: TempoMap, bpm: float, times_ms: np.ndarray, margin_ms: float
+) -> tuple[np.ndarray, np.ndarray]:
+    beats, starts, bpms = tempo.columns()
+    ends = np.append(starts[1:], np.inf if tempo.end_ms is None else tempo.end_ms)
+    index = np.maximum(np.searchsorted(starts, times_ms, side="right") - 1, 0)
+    inside = (
+        (np.abs(bpms[index] - bpm) <= BPM_MATCH_TOLERANCE * bpm)
+        & (times_ms - starts[index] >= margin_ms)
+        & (ends[index] - times_ms >= margin_ms)
+    )
+    translation = beats[index] * MS_PER_MINUTE / bpm - starts[index]
+    return inside, times_ms + translation
 
 
-def resolve_tempo(tempo: TempoMap, total_ms: float) -> tuple[TempoMap, float]:
-    folded = tempo.scaled(fold_factor(tempo.dominant_bpm(total_ms)))
-    return folded, folded.dominant_bpm(total_ms)
-
-
-def grid_anchor_ms(tempo: TempoMap, subdivision: int, peaks_ms: np.ndarray) -> float:
-    index = tempo.grid_index(peaks_ms, subdivision)
-    residual = peaks_ms - tempo.line_ms(index, subdivision)
-    widest_ms = MS_PER_MINUTE / tempo.slowest_bpm / subdivision
-    return circular_mode(residual, widest_ms)
+def grid_anchor_ms(tempo: TempoMap, config: AnalysisConfig, selected: Heads) -> float:
+    margin_ms = ANCHOR_BOUNDARY_BEAT_RATIO * config.layout.comb_beat_ms
+    inside, mapped = dominant_tempo_times(
+        tempo, config.bpm, selected.peaks_ms, margin_ms
+    )
+    if np.count_nonzero(inside) < MIN_ONSETS:
+        return 0.0
+    estimate = estimate_comb_phase(
+        mapped[inside], np.maximum(selected.strengths[inside], 0.0), config.layout
+    )
+    return 0.0 if estimate is None else estimate.phase_ms
 
 
 def make_warp(
@@ -64,13 +76,14 @@ def make_warp(
 ) -> GridWarp:
     if tempo is None:
         return IDENTITY_WARP
-    peaks_ms = detection.heads[config.head_level].peaks_ms
+    steps = config.layout.beat_steps
+    selected = detection.heads[config.head_level]
     anchor_ms = (
-        grid_anchor_ms(tempo, config.subdivision, peaks_ms)
-        if peaks_ms.size >= MIN_ONSETS
+        grid_anchor_ms(tempo, config, selected)
+        if selected.peaks_ms.size >= MIN_ONSETS
         else 0.0
     )
-    return GridWarp(tempo, config.subdivision, config.period_ms, anchor_ms)
+    return GridWarp(tempo, steps, config.period_ms, anchor_ms)
 
 
 def warped_detection(detection: Detection, warp: GridWarp) -> Detection:

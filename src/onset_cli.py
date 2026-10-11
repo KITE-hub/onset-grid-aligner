@@ -12,16 +12,13 @@ from onset_config import (
     DEFAULT_HEAD_LEVEL,
     DEFAULT_HIGH_HZ,
     DEFAULT_LOW_HZ,
-    DEFAULT_REFERENCE_GROUP,
     FILTER_CHOICES,
     FILTER_ZERO,
     MAX_BPM,
     MIN_BPM,
-    REFERENCE_CHOICES,
-    SUBDIVISIONS,
 )
 from onset_pipeline import run_pipeline, RunOptions
-from onset_report import render_report
+from onset_report import render_compact_report, render_report
 from onset_window_phase import MIN_DRIFT_WINDOW_SEC
 
 
@@ -51,26 +48,21 @@ def validate_arguments(args: argparse.Namespace) -> Path:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="BPM固定音源のオンセット位相(グリッドに対するずれ)を推定する"
+        description="ドラムステムのオンセット位相(拍グリッドに対するずれ)を推定する"
     )
     parser.add_argument("audio", type=Path)
     parser.add_argument("--bpm", type=float, default=None)
     parser.add_argument("--bpm-min", type=float, default=ESTIMATE_MIN_BPM)
     parser.add_argument("--bpm-max", type=float, default=ESTIMATE_MAX_BPM)
-    parser.add_argument("--subdivision", type=int, default=None, choices=SUBDIVISIONS)
     parser.add_argument("--low-hz", type=float, default=DEFAULT_LOW_HZ)
     parser.add_argument("--high-hz", type=float, default=DEFAULT_HIGH_HZ)
     parser.add_argument("--head-level", type=float, default=DEFAULT_HEAD_LEVEL)
     parser.add_argument(
         "--drift-window-sec", type=float, default=DEFAULT_DRIFT_WINDOW_SEC
     )
-    parser.add_argument(
-        "--reference-group",
-        choices=REFERENCE_CHOICES,
-        default=DEFAULT_REFERENCE_GROUP,
-    )
     parser.add_argument("--no-band-check", dest="band_check", action="store_false")
     parser.add_argument("--no-refine", dest="refine", action="store_false")
+    parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--filter-mode", choices=FILTER_CHOICES, default=FILTER_ZERO)
     return parser
 
@@ -80,12 +72,10 @@ def options_from_args(args: argparse.Namespace) -> RunOptions:
         bpm=args.bpm,
         bpm_min=args.bpm_min,
         bpm_max=args.bpm_max,
-        subdivision=args.subdivision,
         low_hz=args.low_hz,
         high_hz=args.high_hz,
         head_level=args.head_level,
         drift_window_sec=args.drift_window_sec,
-        reference_group=args.reference_group,
         filter_mode=args.filter_mode,
         run_band_check=args.band_check,
         run_refine=args.refine,
@@ -100,18 +90,10 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as error:
         print(f"エラー: {error}", file=sys.stderr)
         return 2
-    print(
-        "\n".join(
-            render_report(
-                audio_path.name,
-                run.config,
-                run.analysis,
-                run.estimate,
-                run.decode,
-                run.bands,
-                run.refine,
-                None,
-            )
-        )
+    report = (
+        render_report(audio_path.name, run)
+        if args.verbose
+        else render_compact_report(run)
     )
+    print("\n".join(report))
     return 0
