@@ -5,15 +5,13 @@ from dataclasses import dataclass
 import numpy as np
 
 from onset_analysis import Analysis
-from onset_common import wrap_symmetric
+from onset_common import causal_delay_ms, wrap_symmetric
 from onset_config import AnalysisConfig
-from onset_detection import detected_heads
+from onset_detection import ENVELOPE_SMOOTH_MS, detected_heads
 from onset_groups import analyze_group
-from onset_kick import kick_band_heads, KICK_HIGH_HZ, KICK_LOW_HZ, KickEnvelope
 from onset_labels import LABEL_ALL
 from onset_warp import GridWarp, IDENTITY_WARP
 
-ALT_LOW_BAND = (500.0, 1500.0)
 ALT_HIGH_START_HZ = 6000.0
 ALT_HIGH_END_HZ = 12000.0
 ALT_NYQUIST_RATIO = 0.45
@@ -32,7 +30,6 @@ class BandCheck:
     reference_ms: float
     bands: tuple[BandPhase, ...]
     ringing: BandPhase | None
-    kick: BandPhase | None
 
     @property
     def span_ms(self) -> float:
@@ -44,7 +41,7 @@ def alternate_bands(sample_rate: int) -> tuple[tuple[float, float], ...]:
     high = (ALT_HIGH_START_HZ, min(ALT_HIGH_END_HZ, ALT_NYQUIST_RATIO * sample_rate))
     return tuple(
         (low, upper)
-        for low, upper in (ALT_LOW_BAND, high)
+        for low, upper in (high,)
         if upper >= ALT_MIN_BAND_RATIO * low
     )
 
@@ -64,7 +61,6 @@ def band_check(
     sample_rate: int,
     config: AnalysisConfig,
     analysis: Analysis,
-    kick: KickEnvelope,
     causal: bool,
     warp: GridWarp = IDENTITY_WARP,
 ) -> BandCheck | None:
@@ -84,22 +80,23 @@ def band_check(
     )
     bands = tuple(entry for entry in entries if entry is not None)
     variant = "零位相" if causal else "因果"
+    ringing_causal = not causal
+    ringing_heads = detected_heads(
+        samples, sample_rate, config.low_hz, config.high_hz, level, ringing_causal
+    )
+    if ringing_causal:
+        ringing_heads = ringing_heads - causal_delay_ms(
+            sample_rate,
+            config.low_hz,
+            config.high_hz,
+            ENVELOPE_SMOOTH_MS,
+        )
     ringing = phase_entry(
         f"{config.low_hz:g}~{config.high_hz:g} Hz {variant}フィルタ",
-        warp.times(
-            detected_heads(
-                samples, sample_rate, config.low_hz, config.high_hz, level, not causal
-            )
-        ),
+        warp.times(ringing_heads),
         base.phase_ms,
         period,
     )
-    kick_entry = phase_entry(
-        f"{KICK_LOW_HZ:g}~{KICK_HIGH_HZ:g} Hz キック帯域(独立検出)",
-        warp.times(kick_band_heads(kick, config.grid_beat_ms, level)),
-        base.phase_ms,
-        period,
-    )
-    if not bands and ringing is None and kick_entry is None:
+    if not bands and ringing is None:
         return None
-    return BandCheck(base.phase_ms, bands, ringing, kick_entry)
+    return BandCheck(base.phase_ms, bands, ringing)

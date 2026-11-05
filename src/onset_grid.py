@@ -20,11 +20,12 @@ TIE_TOLERANCE = 1e-9
 PHASE_BIN_MS = 0.1
 PHASE_SMOOTH_MS = 1.0
 PHASE_PEAK_SEPARATION_MS = 5.0
-PHASE_TIE_TOLERANCE = 0.1
-SUPPORT_TIE_TOLERANCE = 0.02
+PHASE_BRANCH_SCORE_RATIO = 0.6
+PHASE_BRANCH_SUPPORT_RATIO = 0.8
 SUPPORT_SIGMA_MS = 1.5
 SUPPORT_SIGMA_LATTICE_RATIO = 0.15
 MAX_PHASE_CANDIDATES = 24
+MIN_PHASE_MARGIN = 0.05
 
 
 def comb_steps() -> tuple[int, ...]:
@@ -274,20 +275,16 @@ def select_phase_peak(
     supports = [
         prior_support(event_phases, values, peak.phase_ms, layout) for peak in ranked
     ]
-    top = ranked[0].score
-    tied = [
+    floor = ranked[0].score * PHASE_BRANCH_SCORE_RATIO
+    scored = [position for position, peak in enumerate(ranked) if peak.score >= floor]
+    best_support = max(supports[position] for position in scored)
+    eligible = [
         position
-        for position, peak in enumerate(ranked)
-        if top - peak.score <= max(top * PHASE_TIE_TOLERANCE, 1e-12)
-    ]
-    best_support = max(supports[position] for position in tied)
-    finalists = [
-        position
-        for position in tied
-        if supports[position] >= best_support * (1.0 - SUPPORT_TIE_TOLERANCE)
+        for position in scored
+        if supports[position] >= best_support * PHASE_BRANCH_SUPPORT_RATIO
     ]
     chosen = min(
-        finalists,
+        eligible,
         key=lambda position: (
             abs(ranked[position].phase_ms),
             ranked[position].phase_ms,

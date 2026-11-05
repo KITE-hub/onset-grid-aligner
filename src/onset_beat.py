@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from onset_analysis import Analysis, analyze
+from onset_common import phase_to_delay_ms
 from onset_config import AnalysisConfig
 from onset_detection import Detection, Heads
 from onset_grid import align_grid, GridAlignment
@@ -33,7 +34,7 @@ class BeatAnalysis:
 
     @property
     def delay_ms(self) -> float | None:
-        return None if self.offset_ms is None else -self.offset_ms
+        return None if self.offset_ms is None else phase_to_delay_ms(self.offset_ms)
 
 
 def beat_weights(heads: Heads, kick_ms: np.ndarray) -> np.ndarray:

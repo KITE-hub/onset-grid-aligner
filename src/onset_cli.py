@@ -18,7 +18,7 @@ from onset_config import (
     MIN_BPM,
 )
 from onset_pipeline import run_pipeline, RunOptions
-from onset_report import render_compact_report, render_report
+from onset_report import render_compact_report
 from onset_window_phase import MIN_DRIFT_WINDOW_SEC
 
 
@@ -62,7 +62,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--no-band-check", dest="band_check", action="store_false")
     parser.add_argument("--no-refine", dest="refine", action="store_false")
-    parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--filter-mode", choices=FILTER_CHOICES, default=FILTER_ZERO)
     return parser
 
@@ -90,10 +89,5 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as error:
         print(f"エラー: {error}", file=sys.stderr)
         return 2
-    report = (
-        render_report(audio_path.name, run)
-        if args.verbose
-        else render_compact_report(run)
-    )
-    print("\n".join(report))
+    print("\n".join(render_compact_report(run)))
     return 0

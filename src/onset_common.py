@@ -11,6 +11,10 @@ def ms_to_samples(milliseconds: float, sample_rate: float) -> int:
     return max(1, int(milliseconds * sample_rate / 1000.0))
 
 
+def phase_to_delay_ms(phase_ms: float) -> float:
+    return -phase_ms
+
+
 def wrap_symmetric(values: np.ndarray | float, period: float) -> np.ndarray | float:
     return (values + period / 2.0) % period - period / 2.0
 

@@ -6,7 +6,7 @@ import numpy as np
 from scipy import fft, ndimage, signal
 
 from onset_common import causal_envelope, ms_to_samples
-from onset_config import DEFAULT_HEAD_LEVEL, SENSITIVITY_LEVELS
+from onset_config import DEFAULT_HEAD_LEVEL, MIN_ONSET_GAP_MS, SENSITIVITY_LEVELS
 from onset_odf import block_caps
 
 ENVELOPE_SMOOTH_MS = 0.7
@@ -15,7 +15,6 @@ SLOPE_THRESHOLD_RATIO = 0.15
 SLOPE_PERCENTILE = 99.5
 CAP_BLOCK_SEC = 4.0
 CAP_FLOOR_RATIO = 0.1
-MIN_ONSET_GAP_MS = 30.0
 LOOKBACK_MS = 20.0
 PEAK_WINDOW_MS = 12.0
 MIN_ATTACK_RATIO = 1.5

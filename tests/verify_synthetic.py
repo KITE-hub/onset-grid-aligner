@@ -47,7 +47,7 @@ def analyze_cli(audio: np.ndarray, bpm: float) -> tuple[float, float]:
 
 def analyze_tempo(audio: np.ndarray, segments: tuple[tuple[int, float], ...]) -> float:
     import onset_grid_aligner as core
-    from onset_cache import build_prepared
+    from onset_odf import compute_onset_functions
     from onset_timing import TempoMap, TempoPoint
 
     points = []
@@ -58,24 +58,37 @@ def analyze_tempo(audio: np.ndarray, segments: tuple[tuple[int, float], ...]) ->
         beats += bars * 4.0
         elapsed += bars * 4.0 * 60000.0 / bpm
     tempo = TempoMap(tuple(points), elapsed)
-    prepared = build_prepared(
-        audio, synth.SAMPLE_RATE, core.DEFAULT_LOW_HZ, core.DEFAULT_HIGH_HZ, False
+    duration_ms = audio.shape[0] * 1000.0 / synth.SAMPLE_RATE
+    detection = core.detect_attacks(
+        audio,
+        synth.SAMPLE_RATE,
+        core.DEFAULT_LOW_HZ,
+        core.DEFAULT_HIGH_HZ,
+        core.head_levels(core.DEFAULT_HEAD_LEVEL),
+        False,
     )
     config = core.AnalysisConfig(
-        tempo.dominant_bpm(prepared.duration_sec * 1000.0),
+        tempo.dominant_bpm(duration_ms),
         core.DEFAULT_LOW_HZ,
         core.DEFAULT_HIGH_HZ,
         core.DEFAULT_HEAD_LEVEL,
         core.DEFAULT_DRIFT_WINDOW_SEC,
     )
-    detection = core.attach_kicks(prepared.detection, prepared.kick, config.grid_beat_ms)
+    functions = compute_onset_functions(audio, synth.SAMPLE_RATE)
+    kick = core.kick_envelope(audio, synth.SAMPLE_RATE)
+    detection = core.attach_kicks(detection, kick, config.grid_beat_ms)
     warp = core.make_warp(tempo, config, detection)
-    return core.analyze_beat(detection, config, prepared.functions, warp).offset_ms
+    return core.analyze_beat(detection, config, functions, warp).offset_ms
 
 
 def cli_error(pattern: str, bpm: float, offset: float, seconds: float, jitter: float) -> float:
     audio = synth.render(pattern, synth.constant_segments(bpm, seconds), offset, jitter)
-    return analyze_cli(audio, bpm)[0] - offset
+    measured = analyze_cli(audio, bpm)[0]
+    if measured is None:
+        raise AssertionError(
+            f"{pattern} {bpm:g} BPM: 合成音源のオフセット推定が保留されました"
+        )
+    return measured - offset
 
 
 def tempo_error(pattern: str, offset: float) -> float:

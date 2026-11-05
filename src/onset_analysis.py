@@ -99,7 +99,7 @@ def analyze(
         None
         if grid_phase is None
         else primary_check_basis(
-            selected, drift, config, grid_phase.phase_ms, uses_regression
+            drift, config, grid_phase.phase_ms, uses_regression
         )
     )
     cross = build_cross_check(functions, basis)

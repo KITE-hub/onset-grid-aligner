@@ -23,6 +23,7 @@ from onset_grid import GridAlignment, GridLayout
 from onset_kick import attach_kicks, kick_envelope, KickEnvelope
 from onset_phase import is_stable_value, MIN_ONSETS, SE_CONFIDENCE_Z
 from onset_refine_check import refine_check, RefineCheck
+from onset_resolution import DelayResolution, resolve_delay
 from onset_warp import GridWarp, make_warp
 
 __all__ = [
@@ -34,6 +35,7 @@ __all__ = [
     "Detection", "head_levels", "Heads", "GridAlignment", "GridLayout", "attach_kicks",
     "kick_envelope", "KickEnvelope", "is_stable_value", "MIN_ONSETS", "SE_CONFIDENCE_Z",
     "refine_check", "RefineCheck", "GridWarp", "make_warp",
+    "DelayResolution", "resolve_delay",
 ]
 
 if __name__ == "__main__":
