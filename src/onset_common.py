@@ -11,6 +11,11 @@ def ms_to_samples(milliseconds: float, sample_rate: float) -> int:
     return max(1, int(milliseconds * sample_rate / 1000.0))
 
 
+def window_bounds(times_ms: np.ndarray, window_ms: float) -> np.ndarray:
+    edges = np.arange(0.0, times_ms[-1] + window_ms, window_ms)
+    return np.searchsorted(times_ms, edges)
+
+
 def phase_to_delay_ms(phase_ms: float) -> float:
     return -phase_ms
 

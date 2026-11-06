@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy import stats
 
-from onset_common import wrap_symmetric
+from onset_common import window_bounds, wrap_symmetric
 from onset_config import AnalysisConfig, DEFAULT_DRIFT_WINDOW_SEC
 from onset_detection import Heads
 from onset_drift import DriftFit, fit_direct
@@ -14,10 +14,8 @@ from onset_phase import (
     cluster_radius,
     concentration_score,
     dominant_cluster,
-    excess_stability,
     inlier_ratio,
     recentered_offsets,
-    standard_error_ms,
 )
 
 MIN_WINDOW_ONSETS = 15
@@ -39,7 +37,6 @@ class WindowPhases:
 @dataclass(frozen=True)
 class EventSupport:
     stability: float | None
-    grid_fit: float
 
 
 def window_phases(
@@ -76,23 +73,6 @@ def fit_drift(windows: WindowPhases | None, period: float) -> DriftFit | None:
     return DriftFit(float(intercept), float(slope), float(low), float(high), reference)
 
 
-def window_residuals(
-    windows: WindowPhases | None,
-    drift: DriftFit | None,
-    conclusion_ms: float,
-    uses_regression: bool,
-    period: float,
-) -> np.ndarray | None:
-    if windows is None:
-        return None
-    trend = (
-        drift.slope * (windows.centers_ms - drift.reference_ms)
-        if uses_regression and drift is not None
-        else 0.0
-    )
-    return np.asarray(wrap_symmetric(windows.phases_ms - conclusion_ms - trend, period))
-
-
 def regression_trend_ms(
     times_ms: np.ndarray, drift: DriftFit | None, uses_regression: bool
 ) -> np.ndarray:
@@ -113,8 +93,7 @@ def support_window_ms(config: AnalysisConfig) -> float:
 def supported_window_ratio(
     times_ms: np.ndarray, inside: np.ndarray, period: float, window_ms: float
 ) -> float | None:
-    edges = np.arange(0.0, times_ms[-1] + window_ms, window_ms)
-    bounds = np.searchsorted(times_ms, edges)
+    bounds = window_bounds(times_ms, window_ms)
     scores = [
         concentration_score(int(inside[low:high].sum()), int(high - low), period)
         for low, high in zip(bounds[:-1], bounds[1:])
@@ -125,6 +104,15 @@ def supported_window_ratio(
     return float(np.mean(np.asarray(scores) >= WINDOW_SUPPORT_Z))
 
 
+def timeline_stability(
+    times_ms: np.ndarray, offsets_ms: np.ndarray, period: float, window_ms: float
+) -> float | None:
+    order = np.argsort(times_ms)
+    residuals = wrap_symmetric(offsets_ms[order], period)
+    inside = np.abs(residuals) < cluster_radius(period)
+    return supported_window_ratio(times_ms[order], inside, period, window_ms)
+
+
 def event_support(
     selected: Heads,
     conclusion_ms: float,
@@ -133,36 +121,24 @@ def event_support(
     period: float,
     window_ms: float,
 ) -> EventSupport:
-    order = np.argsort(selected.peaks_ms)
-    times_ms = selected.peaks_ms[order]
-    trend = regression_trend_ms(times_ms, drift, uses_regression)
-    residuals = wrap_symmetric(selected.heads_ms[order] - trend - conclusion_ms, period)
-    inside = np.abs(residuals) < cluster_radius(period)
+    trend = regression_trend_ms(selected.peaks_ms, drift, uses_regression)
+    offsets_ms = selected.heads_ms - trend - conclusion_ms
     return EventSupport(
-        supported_window_ratio(times_ms, inside, period, window_ms),
-        max(0.0, excess_stability(float(inside.mean()), period)),
+        timeline_stability(selected.peaks_ms, offsets_ms, period, window_ms)
     )
-
-
-def window_standard_error_ms(residuals: np.ndarray | None) -> float:
-    if residuals is None or residuals.size < MIN_DRIFT_WINDOWS:
-        return 0.0
-    spread = float(np.median(np.abs(residuals - np.median(residuals))))
-    return standard_error_ms(spread, residuals.size)
 
 
 def estimate_drift(
     heads_ms: np.ndarray,
     windows: WindowPhases | None,
     config: AnalysisConfig,
-    weights: np.ndarray | None = None,
 ) -> DriftFit | None:
     if config.drift_window_sec <= 0.0:
         return None
     period = config.period_ms
     direct = fit_direct(
         heads_ms,
-        np.ones(heads_ms.size) if weights is None else weights,
+        np.ones(heads_ms.size),
         period,
         cluster_radius(period),
         config.drift_window_sec * 1000.0,

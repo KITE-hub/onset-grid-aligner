@@ -71,7 +71,7 @@ def phase_at_midpoint(run, duration_ms: float) -> float:
     drift = analysis.drift
     if analysis.uses_regression and drift is not None:
         phase += drift.slope * (duration_ms / 2.0 - drift.reference_ms)
-    return float(wrap_symmetric(phase, run.config.layout.comb_beat_ms))
+    return float(wrap_symmetric(phase, run.config.layout.beat_ms))
 
 
 def candidate_delays(run, duration_ms: float) -> dict[str, float | None]:
@@ -79,14 +79,13 @@ def candidate_delays(run, duration_ms: float) -> dict[str, float | None]:
     drift = analysis.drift
     uses_regression = analysis.uses_regression and drift is not None
     midpoint_delta = duration_ms / 2.0 - drift.reference_ms if uses_regression else 0.0
-    period = run.config.layout.comb_beat_ms
+    period = run.config.layout.beat_ms
     candidates = {
         "current_comb_delay_ms": run.beat.delay_ms,
         "comb_midpoint_extrapolated_delay_ms": None,
         "cluster_drift_midpoint_delay_ms": phase_to_delay_ms(
             phase_at_midpoint(run, duration_ms)
         ),
-        "refined_midpoint_delay_ms": None,
     }
     if run.beat.delay_ms is not None:
         phase = -run.beat.delay_ms
@@ -95,25 +94,13 @@ def candidate_delays(run, duration_ms: float) -> dict[str, float | None]:
         candidates["comb_midpoint_extrapolated_delay_ms"] = phase_to_delay_ms(
             float(wrap_symmetric(phase, period))
         )
-    if run.refine is not None:
-        phase = run.refine.offset_ms
-        if uses_regression:
-            phase += drift.slope * midpoint_delta
-        candidates["refined_midpoint_delay_ms"] = phase_to_delay_ms(
-            float(wrap_symmetric(phase, period))
-        )
     if analysis.cross is not None:
         for check in analysis.cross.checks:
-            phase = check.converted_ms
+            phase = check.phase_ms
             if check.uses_regression and uses_regression:
                 phase += drift.slope * midpoint_delta
             candidates[f"{check.name}_midpoint_delay_ms"] = phase_to_delay_ms(
                 float(wrap_symmetric(phase, period))
-            )
-    if run.bands is not None and not uses_regression:
-        for index, band in enumerate(run.bands.bands):
-            candidates[f"band_{index}_delay_ms"] = phase_to_delay_ms(
-                float(wrap_symmetric(band.phase_ms, period))
             )
     return candidates
 

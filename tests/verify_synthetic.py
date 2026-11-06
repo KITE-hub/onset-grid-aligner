@@ -35,14 +35,21 @@ def analyze_cli(audio: np.ndarray, bpm: float) -> tuple[float, float]:
     from onset_pipeline import run_pipeline, RunOptions
 
     options = RunOptions(
-        bpm, 60.0, 200.0, DEFAULT_LOW_HZ, DEFAULT_HIGH_HZ, DEFAULT_HEAD_LEVEL,
-        DEFAULT_DRIFT_WINDOW_SEC, FILTER_ZERO, False, False,
+        bpm=bpm,
+        bpm_min=60.0,
+        bpm_max=200.0,
+        low_hz=DEFAULT_LOW_HZ,
+        high_hz=DEFAULT_HIGH_HZ,
+        head_level=DEFAULT_HEAD_LEVEL,
+        drift_window_sec=DEFAULT_DRIFT_WINDOW_SEC,
+        filter_mode=FILTER_ZERO,
     )
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "synthetic.wav"
         sf.write(path, audio, synth.SAMPLE_RATE, subtype="PCM_24")
         run = run_pipeline(path, options)
-    return run.offset_ms, run.delay_ms
+    delay = dict(run.candidates).get("fixed_grid")
+    return (None if delay is None else -delay), delay
 
 
 def analyze_tempo(audio: np.ndarray, segments: tuple[tuple[int, float], ...]) -> float:

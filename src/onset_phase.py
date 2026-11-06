@@ -6,16 +6,11 @@ from scipy import ndimage
 from onset_common import wrap_symmetric
 
 MIN_ONSETS = 8
-STABLE_WINDOW_RATIO = 0.7
-MIN_GRID_FIT = 0.1
 
 CLUSTER_BIN_MS = 0.25
 CLUSTER_SMOOTH_BINS = 5
 CLUSTER_RADIUS_MS = 6.0
 CLUSTER_RADIUS_PERIOD_RATIO = 0.2
-SE_MEDIAN_FACTOR = 1.2533
-MAD_TO_SIGMA = 1.4826
-SE_CONFIDENCE_Z = 1.96
 
 
 def circular_mode(offsets: np.ndarray, period: float) -> float:
@@ -40,32 +35,12 @@ def cluster_radius(period: float) -> float:
     return min(CLUSTER_RADIUS_MS, CLUSTER_RADIUS_PERIOD_RATIO * period)
 
 
+def chance_fraction(radius_ms: float, period: float) -> float:
+    return min(1.0, 2.0 * radius_ms / period)
+
+
 def chance_stability(period: float) -> float:
-    return min(1.0, 2.0 * cluster_radius(period) / period)
-
-
-def excess_stability(stability: float, period: float) -> float:
-    chance = chance_stability(period)
-    return (stability - chance) / (1.0 - chance)
-
-
-def is_stable_value(stability: float | None, grid_fit: float | None) -> bool:
-    return (
-        stability is not None
-        and grid_fit is not None
-        and stability >= STABLE_WINDOW_RATIO
-        and grid_fit >= MIN_GRID_FIT
-    )
-
-
-def screening_fit(peaks_ms: np.ndarray, period: float) -> float:
-    offsets, center = recentered_offsets(peaks_ms, period)
-    inside = float(np.mean(np.abs(offsets - center) < cluster_radius(period)))
-    return max(0.0, excess_stability(inside, period))
-
-
-def standard_error_ms(spread_ms: float, count: int) -> float:
-    return float(SE_MEDIAN_FACTOR * MAD_TO_SIGMA * spread_ms / np.sqrt(max(count, 1)))
+    return chance_fraction(cluster_radius(period), period)
 
 
 def dominant_cluster(
@@ -78,7 +53,7 @@ def dominant_cluster(
 
 
 def concentration_score(count: int, total: int, period: float) -> float:
-    chance = min(1.0, 2.0 * cluster_radius(period) / period)
+    chance = chance_stability(period)
     deviation = np.sqrt(max(total * chance * (1.0 - chance), 1.0))
     return float((count - total * chance) / deviation)
 

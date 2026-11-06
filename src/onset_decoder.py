@@ -16,7 +16,7 @@ MP3_SUFFIX = ".mp3"
 MP3_DECODER_DELAY_SAMPLES = 529
 MP3_ENCODER_DELAY_SAMPLES = 576
 MP3_FULL_DELAY_SAMPLES = MP3_ENCODER_DELAY_SAMPLES + MP3_DECODER_DELAY_SAMPLES
-START_PATTERN = re.compile(r"start:\s*(-?\d+(?:\.\d+)?)")
+START_PATTERN = re.compile(r"Duration:[^\n]*?\bstart:\s*(-?\d+(?:\.\d+)?)")
 DECODER_EXPLANATIONS = {
     ".mp3": "MP3は先頭にエンコーダ遅延とデコーダ遅延が入り、再生側ごとに削る量が異なる。どれが使われるかはファイルから決まらないため、想定される削除量ごとの結果を全て表示する。使う再生環境に当てはまる行を採用すること",
     ".wma": "WMAは先頭から削る量を示す情報がファイルになく、削除量を特定できないため、先頭を削らない場合のみ表示する",

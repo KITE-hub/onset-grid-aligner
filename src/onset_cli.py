@@ -60,8 +60,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--drift-window-sec", type=float, default=DEFAULT_DRIFT_WINDOW_SEC
     )
-    parser.add_argument("--no-band-check", dest="band_check", action="store_false")
-    parser.add_argument("--no-refine", dest="refine", action="store_false")
     parser.add_argument("--filter-mode", choices=FILTER_CHOICES, default=FILTER_ZERO)
     return parser
 
@@ -76,8 +74,6 @@ def options_from_args(args: argparse.Namespace) -> RunOptions:
         head_level=args.head_level,
         drift_window_sec=args.drift_window_sec,
         filter_mode=args.filter_mode,
-        run_band_check=args.band_check,
-        run_refine=args.refine,
     )
 
 

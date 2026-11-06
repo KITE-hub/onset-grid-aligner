@@ -11,17 +11,18 @@ import numpy as np
 import soundfile as sf
 
 FFMPEG_SUFFIXES = {".wma", ".mp3"}
-SUFFIX_ALIASES = {".s3v": ".wma"}
 ALLOWED_SUFFIXES = {".wav", ".flac", ".aif", ".aiff", ".ogg"} | FFMPEG_SUFFIXES
 FFMPEG_TIMEOUT_SEC = 300.0
 MAX_DURATION_SEC = 900.0
+MIN_DURATION_SEC = 0.5
 MAX_SAMPLE_RATE = 192000
 MAX_CHANNELS = 8
+MAX_DECODED_BYTES = 1 << 30
+MAX_TOTAL_SAMPLES = 1 << 28
 
 
 def audio_suffix(audio_path: Path) -> str:
-    suffix = audio_path.suffix.lower()
-    return SUFFIX_ALIASES.get(suffix, suffix)
+    return audio_path.suffix.lower()
 
 
 def find_ffmpeg() -> str:
@@ -47,6 +48,7 @@ def decode_with_ffmpeg(source: Path, destination: Path) -> None:
         "-i", str(source),
         "-map", "0:a:0",
         "-t", f"{MAX_DURATION_SEC + 1.0:g}",
+        "-fs", str(MAX_DECODED_BYTES),
         "-c:a", "pcm_f32le",
         str(destination),
     ]
@@ -60,11 +62,13 @@ def decode_with_ffmpeg(source: Path, destination: Path) -> None:
     )
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg のデコードに失敗しました: {result.stderr.strip()}")
+    if destination.stat().st_size >= MAX_DECODED_BYTES:
+        raise ValueError("デコード結果が大きすぎます")
 
 
 @contextmanager
-def readable_audio(audio_path: Path) -> Iterator[Path]:
-    if audio_suffix(audio_path) not in FFMPEG_SUFFIXES:
+def readable_audio(audio_path: Path, suffix: str | None = None) -> Iterator[Path]:
+    if (suffix or audio_suffix(audio_path)) not in FFMPEG_SUFFIXES:
         yield audio_path
         return
     with tempfile.TemporaryDirectory() as directory:
@@ -77,6 +81,11 @@ def load_audio(path: Path) -> tuple[np.ndarray, int]:
     return sf.read(path, dtype="float32", always_2d=True)
 
 
+def validate_loaded_duration(frame_count: int, sample_rate: int) -> None:
+    if frame_count / sample_rate < MIN_DURATION_SEC:
+        raise ValueError(f"音源が短すぎます(下限 {MIN_DURATION_SEC:g} 秒)")
+
+
 def validate_audio(audio_path: Path, high_hz: float) -> None:
     info = sf.info(audio_path)
     if info.duration > MAX_DURATION_SEC:
@@ -85,5 +94,7 @@ def validate_audio(audio_path: Path, high_hz: float) -> None:
         raise ValueError(
             f"サンプルレートは {MAX_SAMPLE_RATE} Hz 以下、チャンネル数は {MAX_CHANNELS} 以下にしてください"
         )
+    if info.frames * info.channels > MAX_TOTAL_SAMPLES:
+        raise ValueError("音源のサンプル総数が上限を超えています")
     if high_hz >= info.samplerate / 2.0:
         raise ValueError("--high-hz はサンプルレートの半分未満にしてください")

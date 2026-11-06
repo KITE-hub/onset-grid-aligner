@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 from scipy import fft, ndimage, signal
 
-from onset_config import ANALYSIS_HIGH_HZ, ANALYSIS_LOW_HZ, MIN_ONSET_GAP_MS
+from onset_config import (
+    ANALYSIS_HIGH_HZ,
+    ANALYSIS_LOW_HZ,
+    MIN_ONSET_GAP_MS,
+    USABLE_NYQUIST_RATIO,
+)
 
 ODF_LOW_HZ = ANALYSIS_LOW_HZ
 ODF_HIGH_HZ = ANALYSIS_HIGH_HZ
-ODF_NYQUIST_RATIO = 0.45
 ODF_WINDOW_MS = 6.0
 ODF_HOP_MS = 1.0
 ODF_LAG_FRAMES = 2
@@ -26,11 +31,16 @@ ODF_ACTIVE_RATIO = 0.15
 ODF_COMPLEX_THRESHOLD_WINDOW_MS = 100.0
 ODF_COMPLEX_THRESHOLD_RATIO = 1.5
 ODF_COMPLEX_ONSET_LOOKBACK_MS = MIN_ONSET_GAP_MS
-ODF_NAMES = ("SuperFlux風", "複素領域", "HFC")
 
 FOLD_BIN_MS = 0.1
 FOLD_SIGMA_MS = 1.0
 FOLD_MIN_BINS = 8
+
+
+class OnsetKind(Enum):
+    SUPERFLUX = "SuperFlux風"
+    COMPLEX = "複素領域"
+    HFC = "HFC"
 
 
 @dataclass(frozen=True)
@@ -56,23 +66,6 @@ def block_caps(
         count=count,
     )
     return np.maximum(caps, floor)
-
-
-def fold_profile(
-    times_ms: np.ndarray,
-    weights: np.ndarray,
-    period_ms: float,
-    bin_ms: float = FOLD_BIN_MS,
-) -> tuple[np.ndarray, float]:
-    bins = max(FOLD_MIN_BINS, int(round(period_ms / bin_ms)))
-    scaled = np.mod(times_ms, period_ms) * (bins / period_ms)
-    lower = np.floor(scaled)
-    fraction = scaled - lower
-    first = lower.astype(np.int64) % bins
-    second = (first + 1) % bins
-    profile = np.bincount(first, weights * (1.0 - fraction), minlength=bins)
-    profile += np.bincount(second, weights * fraction, minlength=bins)
-    return profile, period_ms / bins
 
 
 def fold_profiles(
@@ -101,6 +94,16 @@ def fold_profiles(
         minlength=rows * bins,
     )
     return profiles.reshape(rows, bins), period_ms / bins
+
+
+def fold_profile(
+    times_ms: np.ndarray,
+    weights: np.ndarray,
+    period_ms: float,
+    bin_ms: float = FOLD_BIN_MS,
+) -> tuple[np.ndarray, float]:
+    profiles, step = fold_profiles(times_ms[None, :], weights, period_ms, bin_ms)
+    return profiles[0], step
 
 
 def fold_phase(
@@ -200,7 +203,7 @@ def spectral_series(
     window = signal.get_window("hann", size).astype(np.float32)
     frames = sliding_window_view(audio, size, axis=0)[::hop]
     band_weights = band.astype(np.float32)
-    series = np.empty((len(ODF_NAMES), frame_count), dtype=np.float32)
+    series = np.empty((len(OnsetKind), frame_count), dtype=np.float32)
     for start in range(0, frame_count, ODF_CHUNK_FRAMES):
         stop = min(frame_count, start + ODF_CHUNK_FRAMES)
         first = max(0, start - ODF_HISTORY_FRAMES)
@@ -220,74 +223,36 @@ def spectral_series(
     return series, size, hop
 
 
-def active_events(
-    name: str, values: np.ndarray, size: int, hop: int, sample_rate: int
-) -> OnsetFunction | None:
+def normalized_strength(values: np.ndarray, sample_rate: int, hop: int) -> np.ndarray:
     block = max(1, int(round(ODF_BLOCK_SEC * sample_rate / hop)))
     caps = np.repeat(
         block_caps(values, block, ODF_PERCENTILE, ODF_FLOOR_RATIO), block
     )[: values.size]
-    strength = np.divide(
+    return np.divide(
         values, caps, out=np.zeros(values.shape, dtype=np.float64), where=caps > 0.0
     )
-    if name == "複素領域":
-        window = max(
-            3,
-            int(
-                round(
-                    ODF_COMPLEX_THRESHOLD_WINDOW_MS
-                    * sample_rate
-                    / (1000.0 * hop)
-                )
-            ),
-        )
-        if window % 2 == 0:
-            window += 1
-        baseline = ndimage.median_filter(strength, size=window, mode="nearest")
-        threshold = np.maximum(
-            ODF_ACTIVE_RATIO, ODF_COMPLEX_THRESHOLD_RATIO * baseline
-        )
-        padded = np.pad(strength, (1, 1), constant_values=-np.inf)
-        padded_threshold = np.pad(
-            threshold, (1, 1), constant_values=ODF_ACTIVE_RATIO
-        )
-        distance = max(
-            1,
-            int(round(MIN_ONSET_GAP_MS * sample_rate / (1000.0 * hop))),
-        )
-        peaks, _ = signal.find_peaks(
-            padded,
-            height=padded_threshold,
-            distance=distance,
-        )
-        active = peaks - 1
-        active = active[(active >= 0) & (active < strength.size)]
-        if active.size == 0:
-            return None
-        weights = np.maximum(strength[active] - threshold[active], 0.0)
-        lookback = max(
-            1,
-            int(round(ODF_COMPLEX_ONSET_LOOKBACK_MS * sample_rate / (1000.0 * hop))),
-        )
-        onset_frames = threshold_crossing_frames(
-            active, strength, threshold, lookback
-        )
-        return OnsetFunction(
-            name, frame_times_ms(onset_frames, size, hop, sample_rate), weights
-        )
-    strength = np.clip(strength, 0.0, 1.0)
-    distance = max(
-        1,
-        int(round(MIN_ONSET_GAP_MS * sample_rate / (1000.0 * hop))),
+
+
+def peak_frames(
+    strength: np.ndarray, threshold: float | np.ndarray, sample_rate: int, hop: int
+) -> np.ndarray:
+    distance = max(1, int(round(MIN_ONSET_GAP_MS * sample_rate / (1000.0 * hop))))
+    height = (
+        np.pad(threshold, (1, 1), constant_values=ODF_ACTIVE_RATIO)
+        if isinstance(threshold, np.ndarray)
+        else threshold
     )
     padded = np.pad(strength, (1, 1), constant_values=-np.inf)
-    peaks, _ = signal.find_peaks(
-        padded,
-        height=ODF_ACTIVE_RATIO,
-        distance=distance,
-    )
+    peaks, _ = signal.find_peaks(padded, height=height, distance=distance)
     active = peaks - 1
-    active = active[(active >= 0) & (active < strength.size)]
+    return active[(active >= 0) & (active < strength.size)]
+
+
+def fixed_threshold_events(
+    name: str, values: np.ndarray, size: int, hop: int, sample_rate: int
+) -> OnsetFunction | None:
+    strength = np.clip(normalized_strength(values, sample_rate, hop), 0.0, 1.0)
+    active = peak_frames(strength, ODF_ACTIVE_RATIO, sample_rate, hop)
     if active.size == 0:
         return None
     return OnsetFunction(
@@ -295,16 +260,46 @@ def active_events(
     )
 
 
+def adaptive_threshold_events(
+    name: str, values: np.ndarray, size: int, hop: int, sample_rate: int
+) -> OnsetFunction | None:
+    strength = normalized_strength(values, sample_rate, hop)
+    window = max(
+        3,
+        int(round(ODF_COMPLEX_THRESHOLD_WINDOW_MS * sample_rate / (1000.0 * hop))),
+    )
+    if window % 2 == 0:
+        window += 1
+    baseline = ndimage.median_filter(strength, size=window, mode="nearest")
+    threshold = np.maximum(ODF_ACTIVE_RATIO, ODF_COMPLEX_THRESHOLD_RATIO * baseline)
+    active = peak_frames(strength, threshold, sample_rate, hop)
+    if active.size == 0:
+        return None
+    weights = np.maximum(strength[active] - threshold[active], 0.0)
+    lookback = max(
+        1,
+        int(round(ODF_COMPLEX_ONSET_LOOKBACK_MS * sample_rate / (1000.0 * hop))),
+    )
+    onset_frames = threshold_crossing_frames(active, strength, threshold, lookback)
+    return OnsetFunction(
+        name, frame_times_ms(onset_frames, size, hop, sample_rate), weights
+    )
+
+
 def compute_onset_functions(
     samples: np.ndarray, sample_rate: int
 ) -> tuple[OnsetFunction, ...]:
-    high_hz = min(ODF_HIGH_HZ, ODF_NYQUIST_RATIO * sample_rate)
+    high_hz = min(ODF_HIGH_HZ, USABLE_NYQUIST_RATIO * sample_rate)
     result = spectral_series(samples, sample_rate, ODF_LOW_HZ, high_hz)
     if result is None:
         return ()
     series, size, hop = result
     functions = (
-        active_events(name, values, size, hop, sample_rate)
-        for name, values in zip(ODF_NAMES, series)
+        (
+            adaptive_threshold_events
+            if kind is OnsetKind.COMPLEX
+            else fixed_threshold_events
+        )(kind.value, values, size, hop, sample_rate)
+        for kind, values in zip(OnsetKind, series)
     )
     return tuple(function for function in functions if function is not None)

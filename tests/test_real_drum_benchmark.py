@@ -41,12 +41,10 @@ def test_real_drum_midpoint_candidates(record):
         head_level=DEFAULT_HEAD_LEVEL,
         drift_window_sec=DEFAULT_DRIFT_WINDOW_SEC,
         filter_mode=FILTER_ZERO,
-        run_band_check=True,
-        run_refine=True,
     )
     run = run_pipeline(record.audio, options)
     candidates = candidate_delays(run, duration_ms(record.audio))
-    period_ms = run.config.layout.comb_beat_ms
+    period_ms = run.config.layout.beat_ms
     errors = {
         name: None
         if value is None
@@ -67,4 +65,8 @@ def test_real_drum_midpoint_candidates(record):
         flush=True,
     )
     assert candidates["cluster_drift_midpoint_delay_ms"] is not None
+    if record.split == "holdout":
+        error_ms = errors["cluster_drift_midpoint_delay_ms"]
+        assert error_ms is not None
+        assert abs(error_ms) <= record.tolerance_ms
 

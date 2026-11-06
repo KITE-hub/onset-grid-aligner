@@ -1,10 +1,4 @@
-from pathlib import Path
-import sys
-
 import pytest
-
-TESTS = Path(__file__).resolve().parent
-sys.path.insert(0, str(TESTS))
 
 from verify_synthetic import cli_error, tempo_error
 

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from onset_render_summary import PRIMARY_CANDIDATES
+from onset_render_summary import render_delay_candidates
 from onset_wavelet import (
     compute_wavelet_functions,
     COARSE_SCALE_NAME,
@@ -72,5 +72,10 @@ def test_silence_and_empty_audio_produce_no_functions():
     assert compute_wavelet_functions(np.zeros((0, 2)), SAMPLE_RATE) == ()
 
 
-def test_wavelet_candidates_are_listed_as_primary_candidates():
-    assert set(WAVELET_NAMES) <= PRIMARY_CANDIDATES
+def test_wavelet_candidates_are_listed_in_the_report():
+    candidates = tuple((name, 1.0) for name in WAVELET_NAMES)
+
+    report = "\n".join(render_delay_candidates(candidates))
+
+    for name in WAVELET_NAMES:
+        assert f"  {name}: +1.00 ms" in report

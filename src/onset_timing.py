@@ -22,10 +22,6 @@ class TempoMap:
     def columns(self) -> np.ndarray:
         return np.asarray(self.points, dtype=float).T
 
-    @property
-    def slowest_bpm(self) -> float:
-        return min(point.bpm for point in self.points)
-
     def beats_at(self, times_ms: np.ndarray) -> np.ndarray:
         beats, starts, bpms = self.columns()
         index = np.maximum(np.searchsorted(starts, times_ms, side="right") - 1, 0)
@@ -47,12 +43,3 @@ class TempoMap:
         stop = total_ms if self.end_ms is None else min(self.end_ms, total_ms)
         durations = np.append(starts[1:], stop) - starts
         return float(bpms[int(np.argmax(durations))])
-
-    def scaled(self, factor: float) -> TempoMap:
-        return TempoMap(
-            tuple(
-                TempoPoint(point.beats * factor, point.ms, point.bpm * factor)
-                for point in self.points
-            ),
-            self.end_ms,
-        )

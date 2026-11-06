@@ -5,8 +5,13 @@ from dataclasses import dataclass
 import numpy as np
 from scipy import fft, ndimage, signal
 
-from onset_common import causal_envelope, ms_to_samples
-from onset_config import DEFAULT_HEAD_LEVEL, MIN_ONSET_GAP_MS, SENSITIVITY_LEVELS
+from onset_common import (
+    bandpass_sos,
+    causal_delay_ms,
+    causal_envelope,
+    ms_to_samples,
+)
+from onset_config import DEFAULT_HEAD_LEVEL, MIN_ONSET_GAP_MS
 from onset_odf import block_caps
 
 ENVELOPE_SMOOTH_MS = 0.7
@@ -57,9 +62,7 @@ def bandpass_envelope(
 ) -> np.ndarray:
     if causal:
         return causal_envelope(samples, sample_rate, low_hz, high_hz, smooth_ms)
-    sos = signal.butter(
-        4, [low_hz, high_hz], btype="bandpass", fs=sample_rate, output="sos"
-    )
+    sos = bandpass_sos(sample_rate, low_hz, high_hz)
     filtered = signal.sosfiltfilt(sos, samples)
     analytic = signal.hilbert(filtered, N=fft.next_fast_len(filtered.size))
     envelope = np.abs(analytic[: filtered.size])
@@ -145,7 +148,7 @@ def heads_ms_from_peaks(
 
 
 def head_levels(head_level: float) -> tuple[float, ...]:
-    return tuple(sorted({*SENSITIVITY_LEVELS, DEFAULT_HEAD_LEVEL, head_level}))
+    return tuple(sorted({DEFAULT_HEAD_LEVEL, head_level}))
 
 
 def build_heads(
@@ -154,13 +157,14 @@ def build_heads(
     strengths: np.ndarray,
     sample_rate: int,
     levels: tuple[float, ...],
+    delay_ms: float = 0.0,
 ) -> dict[float, Heads]:
     heads = {}
     for level in levels:
         heads_ms, peaks_ms, valid = heads_ms_from_peaks(
             envelope, peaks, sample_rate, level
         )
-        heads[level] = Heads(heads_ms, peaks_ms, strengths[valid])
+        heads[level] = Heads(heads_ms - delay_ms, peaks_ms, strengths[valid])
     return heads
 
 
@@ -194,8 +198,13 @@ def detect_attacks(
     )
     peaks = attack_peaks(slope, caps, sample_rate)
     strengths = attack_strengths(slope, caps, peaks)
+    delay_ms = (
+        causal_delay_ms(sample_rate, low_hz, high_hz, ENVELOPE_SMOOTH_MS)
+        if causal
+        else 0.0
+    )
     return Detection(
         np.empty(0),
         sample_rate,
-        build_heads(envelope, peaks, strengths, sample_rate, levels),
+        build_heads(envelope, peaks, strengths, sample_rate, levels, delay_ms),
     )

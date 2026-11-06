@@ -41,6 +41,7 @@ class GridWarp:
 
 
 IDENTITY_WARP = GridWarp()
+ANCHOR_UNAVAILABLE_MESSAGE = "優勢テンポ区間のオンセットが不足しており、グリッド位相を推定できません"
 
 
 def dominant_tempo_times(
@@ -59,16 +60,18 @@ def dominant_tempo_times(
 
 
 def grid_anchor_ms(tempo: TempoMap, config: AnalysisConfig, selected: Heads) -> float:
-    margin_ms = ANCHOR_BOUNDARY_BEAT_RATIO * config.layout.comb_beat_ms
+    margin_ms = ANCHOR_BOUNDARY_BEAT_RATIO * config.layout.beat_ms
     inside, mapped = dominant_tempo_times(
         tempo, config.bpm, selected.peaks_ms, margin_ms
     )
     if np.count_nonzero(inside) < MIN_ONSETS:
-        return 0.0
+        raise ValueError(ANCHOR_UNAVAILABLE_MESSAGE)
     estimate = estimate_comb_phase(
         mapped[inside], np.maximum(selected.strengths[inside], 0.0), config.layout
     )
-    return 0.0 if estimate is None else estimate.phase_ms
+    if estimate is None:
+        raise ValueError(ANCHOR_UNAVAILABLE_MESSAGE)
+    return estimate.phase_ms
 
 
 def make_warp(

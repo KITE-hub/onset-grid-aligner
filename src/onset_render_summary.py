@@ -1,32 +1,23 @@
 from __future__ import annotations
 
-from onset_format import signed
-from onset_pipeline import AnalysisRun
-from onset_resolution import DelayResolution
-from onset_wavelet import WAVELET_NAMES
+from collections.abc import Mapping
 
-PRIMARY_CANDIDATES = frozenset(
-    {"fixed_grid", "SuperFlux風", "複素領域", "HFC", *WAVELET_NAMES}
-)
+from onset_format import signed
+from onset_resolution import DelayCandidates
 
 
 def render_delay_candidates(
-    resolution: DelayResolution, run: AnalysisRun | None = None
+    candidates: DelayCandidates, branch_shifts: Mapping[str, float] | None = None
 ) -> list[str]:
-    checks = (
-        {}
-        if run is None or run.analysis.cross is None
-        else {check.name: check for check in run.analysis.cross.checks}
-    )
-    lines = []
-    for name, value in resolution.candidates:
-        if name not in PRIMARY_CANDIDATES:
-            continue
-        check = checks.get(name)
-        confidence = (
-            ""
-            if check is None
-            else f" (位相候補の優位差 {check.phase_margin:.1%})"
-        )
-        lines.append(f"  {name}: {signed(value)} ms{confidence}")
+    shifts = branch_shifts or {}
+    lines = [
+        f"  {name}: {signed(value)} ms" + branch_note(shifts.get(name, 0.0))
+        for name, value in candidates
+    ]
     return ["[補正候補: 方式別、集約判定なし]", *(lines or ["  なし"])]
+
+
+def branch_note(shift_ms: float) -> str:
+    if abs(shift_ms) < 0.005:
+        return ""
+    return f" (枝を {signed(shift_ms)} ms 補正)"

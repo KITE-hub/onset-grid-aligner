@@ -6,14 +6,18 @@ import numpy as np
 
 from onset_common import wrap_symmetric
 from onset_config import AnalysisConfig
-from onset_cross_check import build_cross_check, CrossCheck, primary_check_basis
+from onset_cross_check import build_cross_check, CheckBasis, CrossCheck
 from onset_detection import Detection, Heads
 from onset_drift import DriftFit
-from onset_groups import build_groups, GroupAnalysis, head_level_sensitivity
-from onset_labels import LABEL_ALL
+from onset_groups import analyze_group, GroupAnalysis
 from onset_odf import OnsetFunction
-from onset_grid import CombPhaseEstimate, estimate_comb_phase
-from onset_phase import cluster_radius, standard_error_ms
+from onset_grid import (
+    CombPhaseEstimate,
+    estimate_comb_phase,
+    phase_support,
+    PhaseSupport,
+)
+from onset_phase import cluster_radius
 from onset_window_phase import (
     estimate_drift,
     event_support,
@@ -21,26 +25,20 @@ from onset_window_phase import (
     resolve_phase,
     support_window_ms,
     window_phases,
-    window_residuals,
-    window_standard_error_ms,
-    WindowPhases,
 )
 
 
 @dataclass(frozen=True)
 class Analysis:
     period_ms: float
-    groups: dict[str, GroupAnalysis]
     primary: GroupAnalysis
-    windows: WindowPhases | None
     drift: DriftFit | None
-    sensitivity: tuple[tuple[float, float | None], ...]
     conclusion_ms: float
     uses_regression: bool
     grid_phase: CombPhaseEstimate | None
     cross: CrossCheck | None
     stability: float | None
-    grid_fit: float | None
+    grid_support: PhaseSupport | None
 
     def trend_ms(self, times_ms: np.ndarray) -> np.ndarray:
         return regression_trend_ms(times_ms, self.drift, self.uses_regression)
@@ -53,25 +51,11 @@ class Analysis:
             )
         )
 
-    @property
-    def uncertainty_ms(self) -> float:
-        events = standard_error_ms(self.primary.spread_ms, self.primary.cluster_count)
-        residuals = window_residuals(
-            self.windows,
-            self.drift,
-            self.conclusion_ms,
-            self.uses_regression,
-            self.period_ms,
-        )
-        return max(events, window_standard_error_ms(residuals))
 
 
-def aligned_members(
-    analysis: Analysis, selected: Heads
-) -> tuple[np.ndarray, np.ndarray]:
+def aligned_members(analysis: Analysis, selected: Heads) -> np.ndarray:
     residual = analysis.residuals_ms(selected.heads_ms, selected.peaks_ms)
-    members = np.flatnonzero(np.abs(residual) < cluster_radius(analysis.period_ms))
-    return members, np.zeros(members.size)
+    return np.flatnonzero(np.abs(residual) < cluster_radius(analysis.period_ms))
 
 
 def analyze(
@@ -81,10 +65,9 @@ def analyze(
 ) -> Analysis:
     period = config.period_ms
     selected = detection.heads[config.head_level]
-    groups = build_groups(selected.heads_ms, period)
-    if not groups:
+    primary = analyze_group(selected.heads_ms, period)
+    if primary is None:
         raise ValueError("オンセットを十分に検出できませんでした")
-    primary = groups[LABEL_ALL]
     windows = (
         window_phases(primary, period, config.drift_window_sec)
         if config.drift_window_sec > 0.0
@@ -98,9 +81,7 @@ def analyze(
     basis = (
         None
         if grid_phase is None
-        else primary_check_basis(
-            drift, config, grid_phase.phase_ms, uses_regression
-        )
+        else CheckBasis(drift, config, uses_regression, support_window_ms(config))
     )
     cross = build_cross_check(functions, basis)
     support = event_support(
@@ -113,15 +94,14 @@ def analyze(
     )
     return Analysis(
         period,
-        groups,
         primary,
-        windows,
         drift,
-        head_level_sensitivity(detection, period),
         conclusion_ms,
         uses_regression,
         grid_phase,
         cross,
         support.stability,
-        support.grid_fit,
+        None
+        if grid_phase is None
+        else phase_support(selected.heads_ms, grid_phase.phase_ms, config.layout),
     )

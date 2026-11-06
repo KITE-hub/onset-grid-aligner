@@ -1,10 +1,4 @@
-from pathlib import Path
-import sys
-
 import pytest
-
-TESTS = Path(__file__).resolve().parent
-sys.path.insert(0, str(TESTS))
 
 from verify_synthetic import analyze_cli, synth
 
@@ -17,6 +11,5 @@ def test_reported_delay_has_audio_movement_sign(source_offset_ms):
         source_offset_ms,
     )
     _, delay_ms = analyze_cli(audio, 120.0)
-    if delay_ms is None:
-        pytest.skip("estimator families withheld a scalar delay")
+    assert delay_ms is not None
     assert delay_ms == pytest.approx(-source_offset_ms, abs=3.0)

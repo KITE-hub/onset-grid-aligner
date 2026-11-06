@@ -5,8 +5,9 @@ from dataclasses import dataclass
 import numpy as np
 from scipy import ndimage
 
-from onset_common import wrap_symmetric
+from onset_common import window_bounds, wrap_symmetric
 from onset_odf import fold_phase, fold_profiles
+from onset_phase import chance_fraction
 
 METHOD_DIRECT = "直接フィット"
 METHOD_WINDOW = "窓回帰"
@@ -97,8 +98,7 @@ def slope_grid(span_ms: float) -> tuple[np.ndarray, float]:
 
 
 def block_slices(times_ms: np.ndarray, window_ms: float) -> list[tuple[int, int]]:
-    edges = np.arange(0.0, times_ms[-1] + window_ms, window_ms)
-    bounds = np.searchsorted(times_ms, edges)
+    bounds = window_bounds(times_ms, window_ms)
     return [
         (int(low), int(high))
         for low, high in zip(bounds[:-1], bounds[1:])
@@ -137,7 +137,7 @@ def inlier_excess(
 ) -> float:
     residual = wrap_symmetric(shifted_ms - phase_ms, period_ms)
     inlier = float(np.average(np.abs(residual) < radius_ms, weights=weights))
-    chance = min(1.0, 2.0 * radius_ms / period_ms)
+    chance = chance_fraction(radius_ms, period_ms)
     return (inlier - chance) / (1.0 - chance)
 
 

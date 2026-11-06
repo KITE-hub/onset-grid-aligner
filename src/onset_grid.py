@@ -14,18 +14,19 @@ GRID_LATTICES = (2, 3, 4, 6, 8)
 BEAT_POINTS = 4.0
 LINE_POINTS = 1.0
 FOLD_MIN_BPM = 150.0
-FOLD_MAX_BPM = 2.0 * FOLD_MIN_BPM
 MIN_BEAT_MARGIN = 0.1
 TIE_TOLERANCE = 1e-9
 PHASE_BIN_MS = 0.1
 PHASE_SMOOTH_MS = 1.0
-PHASE_PEAK_SEPARATION_MS = 5.0
 PHASE_BRANCH_SCORE_RATIO = 0.6
 PHASE_BRANCH_SUPPORT_RATIO = 0.8
 SUPPORT_SIGMA_MS = 1.5
 SUPPORT_SIGMA_LATTICE_RATIO = 0.15
 MAX_PHASE_CANDIDATES = 24
-MIN_PHASE_MARGIN = 0.05
+FIT_TOLERANCE_MS = 2.0
+FIT_TOLERANCE_LATTICE_RATIO = 0.15
+PHASE_REFINE_RADIUS_MS = 3.0
+PHASE_REFINE_LATTICE_RATIO = 0.45
 
 
 def comb_steps() -> tuple[int, ...]:
@@ -83,20 +84,16 @@ class GridLayout:
         return self.lattice_ms * STEPS_PER_BEAT
 
     @property
-    def comb_beat_ms(self) -> float:
+    def beat_ms(self) -> float:
         return MS_PER_MINUTE / self.bpm
 
     @property
     def comb_lattice_ms(self) -> float:
-        return self.comb_beat_ms / STEPS_PER_BEAT
+        return self.beat_ms / STEPS_PER_BEAT
 
     @property
     def beat_steps(self) -> int:
         return max(1, int(round(STEPS_PER_BEAT * 2.0**self.octave)))
-
-    @property
-    def beat_ms(self) -> float:
-        return self.lattice_ms * self.beat_steps
 
     @property
     def period_steps(self) -> int:
@@ -118,27 +115,24 @@ class GridLayout:
 class PhasePeak:
     phase_ms: float
     score: float
-    index: int
 
 
 @dataclass(frozen=True)
-class PeakSelection:
-    chosen: PhasePeak
-    margin: float
-    runner: PhasePeak | None
+class PhaseSupport:
+    attack_count: int
+    support_count: int
+    support_mad_ms: float | None
+
+    @property
+    def support_ratio(self) -> float | None:
+        if self.attack_count == 0:
+            return None
+        return self.support_count / self.attack_count
 
 
 @dataclass(frozen=True)
 class CombPhaseEstimate:
     phase_ms: float
-    mad_ms: float
-    fit: float
-    se95_ms: float
-    count: int
-    phase_margin: float
-    runner_up_phase_ms: float | None
-    peak_score: float
-    runner_up_score: float
 
 
 @dataclass(frozen=True)
@@ -151,14 +145,6 @@ class GridAlignment:
     lattice_ms: float
     beat_ms: float
     reference_phase_ms: float
-    comb_mad_ms: float
-    comb_fit: float
-    comb_se95_ms: float
-    comb_count: int
-    phase_margin: float
-    runner_up_phase_ms: float | None
-    phase_peak_score: float
-    phase_runner_up_score: float
 
     @property
     def beat_decided(self) -> bool:
@@ -170,34 +156,10 @@ class GridAlignment:
         )
         return float(wrap_symmetric(nearby + self.shift_steps * self.lattice_ms, self.beat_ms))
 
-    @property
-    def offset_ms(self) -> float:
-        return self.phase_ms
 
-    @property
-    def candidate_offsets_ms(self) -> tuple[float, ...]:
-        offsets = {
-            round(
-                float(
-                    wrap_symmetric(
-                        self.reference_phase_ms + step * self.lattice_ms,
-                        self.beat_ms,
-                    )
-                ),
-                6,
-            )
-            for step in self.candidate_steps
-        }
-        return tuple(sorted(offsets, key=lambda value: (abs(value), value)))
 
-    @property
-    def runner_up_ms(self) -> float:
-        return float(
-            wrap_symmetric(
-                self.reference_phase_ms + self.runner_up_steps * self.lattice_ms,
-                self.beat_ms,
-            )
-        )
+def fit_tolerance_ms(layout: GridLayout) -> float:
+    return min(FIT_TOLERANCE_MS, layout.comb_lattice_ms * FIT_TOLERANCE_LATTICE_RATIO)
 
 
 def lattice_index(times_ms: np.ndarray, phase_ms: float, lattice_ms: float) -> np.ndarray:
@@ -239,7 +201,7 @@ def comb_line_times(layout: GridLayout) -> np.ndarray:
 
 def comb_residuals(times_ms: np.ndarray, layout: GridLayout) -> np.ndarray:
     times = np.asarray(times_ms, dtype=float)
-    beat_ms = layout.comb_beat_ms
+    beat_ms = layout.beat_ms
     line_times = comb_line_times(layout)
     beat_positions = np.mod(times, beat_ms)
     differences = wrap_symmetric(beat_positions[:, None] - line_times[None, :], beat_ms)
@@ -252,15 +214,11 @@ def prior_support(
 ) -> float:
     differences = wrap_symmetric(
         (event_phases - phase_ms)[:, None] - comb_line_times(layout)[None, :],
-        layout.comb_beat_ms,
+        layout.beat_ms,
     )
     sigma = min(SUPPORT_SIGMA_MS, layout.comb_lattice_ms * SUPPORT_SIGMA_LATTICE_RATIO)
     kernel = np.exp(-0.5 * (differences / sigma) ** 2) * LINE_PRIORS[None, :]
     return float(np.dot(values, kernel.max(axis=1)))
-
-
-def relative_gap(best: float, other: float) -> float:
-    return 0.0 if best <= 0.0 else max(0.0, (best - other) / best)
 
 
 def select_phase_peak(
@@ -268,7 +226,7 @@ def select_phase_peak(
     event_phases: np.ndarray,
     values: np.ndarray,
     layout: GridLayout,
-) -> PeakSelection:
+) -> PhasePeak:
     ranked = sorted(peaks, key=lambda peak: peak.score, reverse=True)[
         :MAX_PHASE_CANDIDATES
     ]
@@ -290,23 +248,18 @@ def select_phase_peak(
             ranked[position].phase_ms,
         ),
     )
-    rivals = [
-        position
-        for position, peak in enumerate(ranked)
-        if abs(float(wrap_symmetric(peak.phase_ms - ranked[chosen].phase_ms, layout.comb_beat_ms)))
-        >= PHASE_PEAK_SEPARATION_MS
-    ]
-    if not rivals:
-        return PeakSelection(ranked[chosen], 1.0, None)
-    gaps = {
-        position: max(
-            relative_gap(ranked[chosen].score, ranked[position].score),
-            relative_gap(supports[chosen], supports[position]),
-        )
-        for position in rivals
-    }
-    closest = min(rivals, key=lambda position: gaps[position])
-    return PeakSelection(ranked[chosen], gaps[closest], ranked[closest])
+    return ranked[chosen]
+
+
+def phase_support(
+    times_ms: np.ndarray, phase_ms: float, layout: GridLayout
+) -> PhaseSupport:
+    residuals = comb_residuals(np.asarray(times_ms, dtype=float) - phase_ms, layout)
+    supporting = residuals[np.abs(residuals) <= fit_tolerance_ms(layout)]
+    if supporting.size == 0:
+        return PhaseSupport(int(residuals.size), 0, None)
+    mad = float(np.median(np.abs(supporting - np.median(supporting))))
+    return PhaseSupport(int(residuals.size), int(supporting.size), mad)
 
 
 def estimate_comb_phase(
@@ -321,7 +274,7 @@ def estimate_comb_phase(
     values = values[valid]
     if times.size == 0:
         return None
-    beat_ms = layout.comb_beat_ms
+    beat_ms = layout.beat_ms
     line_times = comb_line_times(layout)
     event_phases = np.mod(times, beat_ms)
     candidates = wrap_symmetric(event_phases[:, None] - line_times[None, :], beat_ms)
@@ -357,15 +310,12 @@ def estimate_comb_phase(
         return phase, float(center)
 
     peak_rows = [
-        PhasePeak(*refine_peak(int(index)), int(index)) for index in peaks
+        PhasePeak(*refine_peak(int(index))) for index in peaks
     ]
-    selection = select_phase_peak(peak_rows, event_phases, values, layout)
-    phase = selection.chosen.phase_ms
-    peak_score = selection.chosen.score
-    phase_margin = selection.margin
-    runner_phase = None if selection.runner is None else float(selection.runner.phase_ms)
-    runner_score = 0.0 if selection.runner is None else float(selection.runner.score)
-    radius = min(3.0, layout.comb_lattice_ms * 0.45)
+    phase = select_phase_peak(peak_rows, event_phases, values, layout).phase_ms
+    radius = min(
+        PHASE_REFINE_RADIUS_MS, layout.comb_lattice_ms * PHASE_REFINE_LATTICE_RATIO
+    )
     relative_candidates = wrap_symmetric(candidates - phase, beat_ms)
     selected_candidates = np.abs(relative_candidates) <= radius
     candidate_values = relative_candidates[selected_candidates]
@@ -374,30 +324,13 @@ def estimate_comb_phase(
         phase = float(
             wrap_symmetric(phase + weighted_median(candidate_values, candidate_weights), beat_ms)
         )
-    residuals = comb_residuals(times - phase, layout)
-    residual_center = weighted_median(residuals, values)
-    deviations = np.abs(residuals - residual_center)
-    mad = weighted_median(deviations, values)
-    tolerance = min(2.0, layout.comb_lattice_ms * 0.15)
-    fit = float(values[np.abs(residuals) <= tolerance].sum() / values.sum())
-    standard_error = 1.2533 * 1.4826 * mad / np.sqrt(max(times.size, 1))
-    return CombPhaseEstimate(
-        phase,
-        mad,
-        fit,
-        1.96 * standard_error,
-        int(times.size),
-        phase_margin,
-        runner_phase,
-        peak_score,
-        runner_score,
-    )
+    return CombPhaseEstimate(phase)
 
 
 def align_grid(
     times_ms: np.ndarray,
     weights: np.ndarray,
-    phase_ms: float,
+    reference_phase_ms: float,
     layout: GridLayout,
     diagnostic_weights: np.ndarray | None = None,
     phase_estimate: CombPhaseEstimate | None = None,
@@ -417,7 +350,7 @@ def align_grid(
     if comb is None:
         return None
     period_steps = layout.period_steps
-    index = lattice_index(times, phase_ms, layout.lattice_ms)
+    index = lattice_index(times, reference_phase_ms, layout.lattice_ms)
     profile = np.bincount(index % period_steps, weights=score_weights, minlength=period_steps)
     scores = circular_scores(profile, layout.beat_score_points)
     shifts = np.arange(period_steps)
@@ -439,13 +372,5 @@ def align_grid(
         margin_against(scores, chosen, rivals),
         layout.lattice_ms,
         layout.beat_ms,
-        phase_ms,
-        comb.mad_ms,
-        comb.fit,
-        comb.se95_ms,
-        comb.count,
-        comb.phase_margin,
-        comb.runner_up_phase_ms,
-        comb.peak_score,
-        comb.runner_up_score,
+        reference_phase_ms,
     )

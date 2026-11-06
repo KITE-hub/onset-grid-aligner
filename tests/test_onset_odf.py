@@ -3,7 +3,7 @@ import pytest
 
 from onset_config import DEFAULT_HIGH_HZ, DEFAULT_LOW_HZ
 from onset_odf import (
-    active_events,
+    adaptive_threshold_events,
     chunk_functions,
     compute_onset_functions,
     frame_times_ms,
@@ -32,7 +32,7 @@ def test_complex_function_selects_local_peaks_above_moving_median():
     values = 0.1 + 0.01 * np.sin(2.0 * np.pi * frames / 20.0)
     values[1000] = 0.8
 
-    events = active_events("複素領域", values, 8, 1, 1000)
+    events = adaptive_threshold_events("複素領域", values, 8, 1, 1000)
 
     assert events is not None
     assert events.times_ms.size == 1

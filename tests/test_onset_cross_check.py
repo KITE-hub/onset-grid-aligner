@@ -11,9 +11,9 @@ from onset_odf import OnsetFunction
 
 def test_detector_phase_is_not_shifted_by_primary_envelope_rise_gap(monkeypatch):
     config = AnalysisConfig(120.0, 1500.0, 6000.0, 0.15, 10.0)
-    basis = CheckBasis(None, config, 0.0, False)
+    basis = CheckBasis(None, config, False, 10000.0)
     function = OnsetFunction("複素領域", np.arange(30.0), np.ones(30))
-    estimate = SimpleNamespace(phase_ms=4.0, phase_margin=0.1)
+    estimate = SimpleNamespace(phase_ms=4.0)
     monkeypatch.setattr(
         onset_cross_check, "estimate_comb_phase", lambda *args: estimate
     )
@@ -21,4 +21,4 @@ def test_detector_phase_is_not_shifted_by_primary_envelope_rise_gap(monkeypatch)
     result = detector_check(function, basis)
 
     assert result is not None
-    assert result.converted_ms == pytest.approx(4.0)
+    assert result.phase_ms == pytest.approx(4.0)

@@ -1,62 +1,45 @@
 from __future__ import annotations
 
-import numpy as np
-
 from onset_bpm_estimate import ESTIMATE_MIN_DOMINANCE
 from onset_decoder import DECODER_EXPLANATIONS, decoder_variants
 from onset_format import signed
-from onset_grid import MIN_PHASE_MARGIN, comb_residuals
 from onset_pipeline import AnalysisRun
+from onset_reliability import MethodReliability, Reliability, reliability_of
 from onset_render_summary import render_delay_candidates
 
 
-def render_grid_diagnostics(run: AnalysisRun) -> list[str]:
-    times = np.asarray(run.analysis.primary.heads_ms, dtype=float)
-    alignment = run.alignment
-    if times.size == 0:
-        return [
-            "検出アタック数: 0件",
-            "固定12位置候補に対する残差中央値: 算出不可",
-            "固定12位置候補に対する残差MAD: 算出不可",
-            "固定12位置候補に対する残差P95: 算出不可",
-            "固定線の許容幅・範囲内件数: 算出不可",
-            "位相候補の一意性: 判定不可",
-        ]
-    offset = None if alignment is None else alignment.phase_ms
-    if offset is None:
-        residuals = np.empty(0, dtype=float)
-        residual_median = residual_mad = residual_p95 = None
-    else:
-        residuals = comb_residuals(times - offset, run.config.layout)
-        residual_median = float(np.median(residuals))
-        residual_mad = float(np.median(np.abs(residuals - residual_median)))
-        residual_p95 = float(np.percentile(np.abs(residuals), 95))
-    tolerance = min(2.0, run.config.layout.comb_lattice_ms * 0.15)
-    if residuals.size:
-        within = int(np.count_nonzero(np.abs(residuals) <= tolerance))
-        fit_text = f"±{tolerance:.2f} ms / {within}/{residuals.size}件"
-    else:
-        fit_text = "算出不可"
-    if alignment is None or alignment.runner_up_phase_ms is None:
-        uniqueness_text = "判定不可"
-    else:
-        verdict = "明瞭" if alignment.phase_margin >= MIN_PHASE_MARGIN else "曖昧"
-        uniqueness_text = f"{verdict} (次点に対する優位差 {alignment.phase_margin:.1%})"
-    return [
-        f"検出アタック数: {times.size}件",
-        f"固定12位置候補に対する残差中央値: {signed(residual_median)} ms" if residual_median is not None else "固定12位置候補に対する残差中央値: 算出不可",
-        f"固定12位置候補に対する残差MAD: {residual_mad:.2f} ms" if residual_mad is not None else "固定12位置候補に対する残差MAD: 算出不可",
-        f"固定12位置候補に対する残差P95: {residual_p95:.2f} ms" if residual_p95 is not None else "固定12位置候補に対する残差P95: 算出不可",
-        f"固定線の許容幅・範囲内件数: {fit_text}",
-        f"位相候補の一意性: {uniqueness_text}",
-    ]
+def render_method_reliability(method: MethodReliability) -> str:
+    support = method.support
+    mad = support.support_mad_ms
+    ratio = support.support_ratio
+    stability = method.stability
+    mad_text = "算出不可" if mad is None else f"{mad:.2f} ms"
+    ratio_text = "算出不可" if ratio is None else f"{ratio:.0%}"
+    stability_text = "算出不可" if stability is None else f"{stability:.0%}"
+    return (
+        f"  {method.name}: 根拠アタック内の残差MAD {mad_text}"
+        f" / 根拠アタック割合 {ratio_text}"
+        f" / 検出アタック数 {support.attack_count}件"
+        f" / 窓単位の安定性 {stability_text}"
+    )
+
+
+def render_reliability(reliability: Reliability) -> list[str]:
+    lines = ["[信頼性の目安: 方式ごと]"]
+    lines.extend(render_method_reliability(method) for method in reliability.methods)
+    if reliability.drift_slope_ms_per_min is not None:
+        lines.append(
+            f"ドリフト補正: 適用 (傾き {signed(reliability.drift_slope_ms_per_min)} ms/分、"
+            "各候補は音源の中央時点に換算)"
+        )
+    return lines
 
 
 def render_decoder_variants(run: AnalysisRun) -> list[str]:
     decode = run.decode
     if decode is None:
         return []
-    fixed_grid = dict(run.resolution.candidates).get("fixed_grid")
+    fixed_grid = dict(run.candidates).get("fixed_grid")
     lines = [
         "[参考: デコーダ遅延の仮定別の補正量(上の補正量を上書きしない)]",
         f"  {DECODER_EXPLANATIONS[decode.suffix]}",
@@ -77,19 +60,10 @@ def render_decoder_variants(run: AnalysisRun) -> list[str]:
 
 
 def render_compact_report(run: AnalysisRun) -> list[str]:
-    lines = render_delay_candidates(run.resolution, run)
-    alignment = run.alignment
-    if alignment is None:
-        lines.append("固定12位置候補の診断: 算出不可")
-    else:
-        uniqueness = "明瞭" if alignment.phase_margin >= MIN_PHASE_MARGIN else "曖昧"
-        lines.append(
-            f"固定12位置候補の診断: 適合率 {alignment.comb_fit:.0%}"
-            f" / 残差MAD {alignment.comb_mad_ms:.2f} ms"
-            f" / グリッド残差の標準誤差換算値 ±{alignment.comb_se95_ms:.2f} ms (95%係数、方式間差・候補曖昧さを含まない)"
-            f" / 位相候補 {uniqueness}"
-        )
-    lines.extend(render_grid_diagnostics(run))
+    reliability = reliability_of(run.analysis, run.alignment, run.config.layout)
+    shifts = {method.name: method.branch_shift_ms for method in reliability.methods}
+    lines = render_delay_candidates(run.candidates, shifts)
+    lines.extend(render_reliability(reliability))
     lines.extend(render_decoder_variants(run))
     if (
         run.estimate is not None

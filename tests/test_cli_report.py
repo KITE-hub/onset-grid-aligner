@@ -1,88 +1,144 @@
 from types import SimpleNamespace
 
-import numpy as np
 import pytest
 
 from onset_cli import build_parser
-from onset_grid import GridLayout
+from onset_grid import GridLayout, PhaseSupport
 from onset_report import render_compact_report
-from onset_resolution import DelayResolution
 
 REMOVED_FRAGMENTS = (
     " 次点: ",
     "アタック検出範囲",
     "アタック間隔",
     "次点のグローバル位相候補",
+    "優位差",
+    "標準誤差",
+    "残差中央値",
+    "残差P95",
+    "許容幅",
+    "位相候補の一意性",
+    "適合率",
+    "固定12位置候補の診断",
 )
 
+LAYOUT = GridLayout(120.0)
 
-def make_run(candidates, heads_ms=None, alignment=None, checks=(), decode=None):
-    resolution = DelayResolution(
-        delay_ms=-3.1,
-        status="consensus",
-        spread_ms=0.2,
-        family_count=3,
-        candidates=candidates,
-    )
-    heads = np.empty(0) if heads_ms is None else heads_ms
+
+def make_check(name, phase_ms, support, stability=None):
     return SimpleNamespace(
-        delay_ms=-3.1,
-        resolution=resolution,
+        name=name, phase_ms=phase_ms, support=support, stability=stability
+    )
+
+
+def make_run(
+    candidates,
+    grid_support=None,
+    stability=None,
+    checks=(),
+    drift=None,
+    uses_regression=False,
+    alignment=None,
+    decode=None,
+):
+    return SimpleNamespace(
+        candidates=candidates,
         alignment=alignment,
-        config=SimpleNamespace(layout=GridLayout(120.0)),
+        config=SimpleNamespace(layout=LAYOUT),
         analysis=SimpleNamespace(
-            primary=SimpleNamespace(heads_ms=heads),
+            grid_support=grid_support,
+            stability=stability,
             cross=SimpleNamespace(checks=checks) if checks else None,
+            drift=drift,
+            uses_regression=uses_regression,
         ),
         estimate=None,
         decode=decode,
     )
 
 
-def test_compact_report_lists_only_primary_candidates():
-    run = make_run((("fixed_grid", 3.1), ("cluster", 3.0), ("複素領域", -71.3)))
+def test_compact_report_lists_every_candidate_without_notes_when_branches_agree():
+    run = make_run((("fixed_grid", 3.1), ("複素領域", -71.3)))
 
     report = "\n".join(render_compact_report(run))
 
-    assert "  fixed_grid: +3.10 ms" in report
-    assert "  複素領域: -71.30 ms" in report
-    assert "cluster" not in report
+    assert "  fixed_grid: +3.10 ms\n" in report
+    assert "  複素領域: -71.30 ms\n" in report
+    assert "枝を" not in report
 
 
-def test_compact_report_omits_runner_up_and_attack_range_lines():
-    checks = (
-        SimpleNamespace(
-            name="複素領域",
-            phase_margin=0.02,
-            converted_ms=0.0,
-            runner_up_converted_ms=10.0,
-        ),
-    )
-    alignment = SimpleNamespace(
-        phase_ms=1.0,
-        runner_up_phase_ms=126.0,
-        phase_margin=0.02,
-        comb_fit=0.9,
-        comb_mad_ms=0.1,
-        comb_se95_ms=0.05,
-    )
+def test_compact_report_shows_reliability_per_method():
+    alignment = SimpleNamespace(phase_ms=0.0, lattice_ms=LAYOUT.comb_lattice_ms)
     run = make_run(
-        (("fixed_grid", -1.0), ("複素領域", -1.2)),
-        heads_ms=1.0 + 125.0 * np.arange(40),
+        (("fixed_grid", -1.0), ("HFC", -1.2)),
+        grid_support=PhaseSupport(660, 480, 0.12),
+        stability=1.0,
+        checks=(make_check("HFC", 0.0, PhaseSupport(100, 40, 0.5), 0.5),),
         alignment=alignment,
-        checks=checks,
     )
 
     report = "\n".join(render_compact_report(run))
 
-    assert "  複素領域: -1.20 ms (位相候補の優位差 2.0%)" in report
+    assert (
+        "  fixed_grid: 根拠アタック内の残差MAD 0.12 ms / 根拠アタック割合 73%"
+        " / 検出アタック数 660件 / 窓単位の安定性 100%"
+    ) in report
+    assert (
+        "  HFC: 根拠アタック内の残差MAD 0.50 ms / 根拠アタック割合 40%"
+        " / 検出アタック数 100件 / 窓単位の安定性 50%"
+    ) in report
     for fragment in REMOVED_FRAGMENTS:
         assert fragment not in report
 
 
-def test_cli_no_longer_accepts_verbose_option():
+def test_compact_report_marks_unavailable_values():
+    alignment = SimpleNamespace(phase_ms=0.0, lattice_ms=LAYOUT.comb_lattice_ms)
+    run = make_run(
+        (("fixed_grid", 0.0),),
+        grid_support=PhaseSupport(0, 0, None),
+        alignment=alignment,
+    )
+
+    report = "\n".join(render_compact_report(run))
+
+    assert (
+        "  fixed_grid: 根拠アタック内の残差MAD 算出不可 / 根拠アタック割合 算出不可"
+        " / 検出アタック数 0件 / 窓単位の安定性 算出不可"
+    ) in report
+
+
+def test_branch_correction_is_reported_next_to_the_candidate():
+    alignment = SimpleNamespace(phase_ms=0.0, lattice_ms=LAYOUT.comb_lattice_ms)
+    run = make_run(
+        (("fixed_grid", 0.0), ("複素領域", -8.88)),
+        grid_support=PhaseSupport(100, 90, 0.1),
+        checks=(make_check("複素領域", -20.0, PhaseSupport(100, 10, 1.0)),),
+        alignment=alignment,
+    )
+
+    report = "\n".join(render_compact_report(run))
+
+    assert "  複素領域: -8.88 ms (枝を -20.83 ms 補正)\n" in report
+    assert "  fixed_grid: +0.00 ms\n" in report
+
+
+def test_drift_note_appears_only_when_regression_is_applied():
+    drift = SimpleNamespace(slope=0.001)
+
+    applied = "\n".join(
+        render_compact_report(make_run((), drift=drift, uses_regression=True))
+    )
+    skipped = "\n".join(
+        render_compact_report(make_run((), drift=drift, uses_regression=False))
+    )
+
+    assert "ドリフト補正: 適用 (傾き +60.00 ms/分" in applied
+    assert "ドリフト補正" not in skipped
+
+
+@pytest.mark.parametrize("option", ["--verbose", "--no-band-check", "--no-refine"])
+def test_cli_no_longer_accepts_removed_options(option):
     with pytest.raises(SystemExit):
-        build_parser().parse_args(["audio.wav", "--verbose"])
+        build_parser().parse_args(["audio.wav", option])
 
 
 def test_decoder_variants_are_listed_only_for_decoded_inputs():
