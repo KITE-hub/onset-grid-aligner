@@ -2,6 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import onset_decoder
+from onset_decoder import DecodeInfo
 
 FFMPEG_STDERR = """Input #0, mp3, from 'song.mp3':
   Metadata:
@@ -29,3 +30,15 @@ def test_leading_skip_is_zero_without_a_duration_line(monkeypatch):
     )
 
     assert onset_decoder.leading_skip_samples(Path("song.mp3"), 44100) == 0
+
+
+def test_mp3_variants_cover_no_skip_decoder_delay_and_full_delay():
+    variants = onset_decoder.decoder_variants(DecodeInfo(".mp3", 44100, 1105))
+
+    assert [variant.skip_samples for variant in variants] == [0, 529, 1105]
+
+
+def test_wma_variants_are_limited_to_no_skip_and_the_header_value():
+    variants = onset_decoder.decoder_variants(DecodeInfo(".wma", 48000, 2048))
+
+    assert [variant.skip_samples for variant in variants] == [0, 2048]

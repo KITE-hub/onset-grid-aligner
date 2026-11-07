@@ -33,3 +33,19 @@ def test_symmetric_pattern_resolves_to_the_true_offset_within_thirty_ms(
 
     assert estimate is not None
     assert estimate.phase_ms == pytest.approx(offset_ms, abs=0.3)
+
+
+def beat_events(bpm, offset_ms):
+    interval_ms = 60000.0 / bpm
+    times = offset_ms + interval_ms * np.arange(int(DURATION_MS / interval_ms))
+    return times, np.ones(times.size)
+
+
+@pytest.mark.parametrize("offset_ms", [20.0, -20.0])
+def test_beat_only_pattern_resolves_to_the_offset_nearest_zero(offset_ms):
+    times, weights = beat_events(120.0, offset_ms)
+
+    estimate = estimate_comb_phase(times, weights, GridLayout(120.0))
+
+    assert estimate is not None
+    assert estimate.phase_ms == pytest.approx(offset_ms, abs=0.3)

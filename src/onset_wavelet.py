@@ -4,7 +4,7 @@ import numpy as np
 from scipy import fft, ndimage
 
 from onset_common import ms_to_samples
-from onset_config import USABLE_NYQUIST_RATIO
+from onset_config import DEFAULT_HEAD_LEVEL, USABLE_NYQUIST_RATIO
 from onset_odf import fixed_threshold_events, OnsetFunction
 
 WAVELET_CENTERS_HZ = (2000.0, 3000.0, 4500.0, 6500.0, 9000.0)
@@ -29,11 +29,15 @@ WAVELET_SCALES_MS = tuple(
 )
 
 
-def usable_centers(sample_rate: int) -> tuple[float, ...]:
+def usable_centers(
+    sample_rate: int, low_hz: float, high_hz: float
+) -> tuple[float, ...]:
     reach = 1.0 + 1.0 / WAVELET_QUALITY
     ceiling = USABLE_NYQUIST_RATIO * sample_rate
     return tuple(
-        center for center in WAVELET_CENTERS_HZ if reach * center <= ceiling
+        center
+        for center in WAVELET_CENTERS_HZ
+        if low_hz <= center <= high_hz and reach * center <= ceiling
     )
 
 
@@ -101,9 +105,13 @@ def add_channel_series(
 
 
 def compute_wavelet_functions(
-    samples: np.ndarray, sample_rate: int
+    samples: np.ndarray,
+    sample_rate: int,
+    low_hz: float,
+    high_hz: float,
+    head_level: float = DEFAULT_HEAD_LEVEL,
 ) -> tuple[OnsetFunction, ...]:
-    centers = usable_centers(sample_rate)
+    centers = usable_centers(sample_rate, low_hz, high_hz)
     audio = np.asarray(samples, dtype=np.float32)
     if audio.ndim == 1:
         audio = audio[:, None]
@@ -114,7 +122,12 @@ def compute_wavelet_functions(
         add_channel_series(series, channel, sample_rate, centers)
     functions = (
         fixed_threshold_events(
-            name, values, WAVELET_FRAME_SIZE, WAVELET_FRAME_HOP, sample_rate
+            name,
+            values,
+            WAVELET_FRAME_SIZE,
+            WAVELET_FRAME_HOP,
+            sample_rate,
+            head_level,
         )
         for (name, _), values in zip(WAVELET_VARIANTS, series)
     )

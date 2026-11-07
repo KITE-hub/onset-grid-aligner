@@ -5,7 +5,6 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 from onset_config import AnalysisConfig
-from onset_detection import Detection, Heads
 from onset_grid import estimate_comb_phase
 from onset_odf import OnsetFunction
 from onset_phase import MIN_ONSETS
@@ -35,9 +34,8 @@ class GridWarp:
     def kicks(self, kick_ms: np.ndarray) -> np.ndarray:
         return np.sort(self.times(kick_ms))
 
-    def heads(self, heads: Heads) -> Heads:
-        shift = self.shifts(heads.peaks_ms)
-        return Heads(heads.heads_ms + shift, heads.peaks_ms + shift, heads.strengths)
+    def function(self, function: OnsetFunction) -> OnsetFunction:
+        return replace(function, times_ms=self.times(function.times_ms))
 
 
 IDENTITY_WARP = GridWarp()
@@ -59,48 +57,27 @@ def dominant_tempo_times(
     return inside, times_ms + translation
 
 
-def grid_anchor_ms(tempo: TempoMap, config: AnalysisConfig, selected: Heads) -> float:
+def grid_anchor_ms(
+    tempo: TempoMap, config: AnalysisConfig, function: OnsetFunction
+) -> float | None:
     margin_ms = ANCHOR_BOUNDARY_BEAT_RATIO * config.layout.beat_ms
     inside, mapped = dominant_tempo_times(
-        tempo, config.bpm, selected.peaks_ms, margin_ms
+        tempo, config.bpm, function.times_ms, margin_ms
     )
     if np.count_nonzero(inside) < MIN_ONSETS:
-        raise ValueError(ANCHOR_UNAVAILABLE_MESSAGE)
+        return None
     estimate = estimate_comb_phase(
-        mapped[inside], np.maximum(selected.strengths[inside], 0.0), config.layout
+        mapped[inside], np.maximum(function.weights[inside], 0.0), config.layout
     )
-    if estimate is None:
-        raise ValueError(ANCHOR_UNAVAILABLE_MESSAGE)
-    return estimate.phase_ms
+    return None if estimate is None else estimate.phase_ms
 
 
 def make_warp(
-    tempo: TempoMap | None, config: AnalysisConfig, detection: Detection
-) -> GridWarp:
+    tempo: TempoMap | None, config: AnalysisConfig, function: OnsetFunction
+) -> GridWarp | None:
     if tempo is None:
         return IDENTITY_WARP
-    steps = config.layout.beat_steps
-    selected = detection.heads[config.head_level]
-    anchor_ms = (
-        grid_anchor_ms(tempo, config, selected)
-        if selected.peaks_ms.size >= MIN_ONSETS
-        else 0.0
-    )
-    return GridWarp(tempo, steps, config.period_ms, anchor_ms)
-
-
-def warped_detection(detection: Detection, warp: GridWarp) -> Detection:
-    return replace(
-        detection,
-        heads={level: warp.heads(item) for level, item in detection.heads.items()},
-        kick_ms=warp.kicks(detection.kick_ms),
-    )
-
-
-def warped_functions(
-    functions: tuple[OnsetFunction, ...], warp: GridWarp
-) -> tuple[OnsetFunction, ...]:
-    return tuple(
-        replace(function, times_ms=warp.times(function.times_ms))
-        for function in functions
-    )
+    anchor_ms = grid_anchor_ms(tempo, config, function)
+    if anchor_ms is None:
+        return None
+    return GridWarp(tempo, config.layout.beat_steps, config.period_ms, anchor_ms)

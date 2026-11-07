@@ -36,3 +36,31 @@ def test_validate_rejects_unsupported_suffix(tmp_path):
 def test_validate_reports_a_missing_file(tmp_path):
     with pytest.raises(FileNotFoundError):
         validate_arguments(make_args(tmp_path / "missing.wav"))
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ("--bpm", "29"),
+        ("--bpm", "401"),
+        ("--head-level", "0"),
+        ("--head-level", "1"),
+        ("--low-hz", "5000", "--high-hz", "4000"),
+        ("--bpm-min", "200", "--bpm-max", "100"),
+        ("--drift-window-sec", "0.5"),
+        ("--drift-window-sec", "901"),
+    ],
+)
+def test_validate_rejects_out_of_range_values(tmp_path, options):
+    audio = tmp_path / "drums.wav"
+    audio.write_bytes(b"")
+
+    with pytest.raises(ValueError):
+        validate_arguments(make_args(audio, *options))
+
+
+def test_validate_accepts_a_disabled_drift_window(tmp_path):
+    audio = tmp_path / "drums.wav"
+    audio.write_bytes(b"")
+
+    assert validate_arguments(make_args(audio, "--drift-window-sec", "0")) == audio.resolve()

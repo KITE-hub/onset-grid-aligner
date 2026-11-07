@@ -18,12 +18,19 @@ def test_parse_xml_accepts_plain_documents():
     assert parse_xml(SONG_XML.encode("utf-8")).tag == "mdb"
 
 
-@pytest.mark.parametrize("encoding", ["utf-8", "utf-16", "utf-32"])
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16"])
 def test_parse_xml_rejects_doctype_in_any_encoding(encoding):
     declaration = f'<?xml version="1.0" encoding="{encoding}"?>'
     raw = (declaration + DOCTYPE_XML).encode(encoding)
 
     with pytest.raises(ValueError, match="DOCTYPE"):
+        parse_xml(raw)
+
+
+def test_parse_xml_reports_unsupported_utf32_documents_as_value_error():
+    raw = ('<?xml version="1.0" encoding="utf-32"?>' + DOCTYPE_XML).encode("utf-32")
+
+    with pytest.raises(ValueError, match="XMLの形式が不正"):
         parse_xml(raw)
 
 

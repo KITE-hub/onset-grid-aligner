@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 import numpy as np
 from scipy import signal
 
 from onset_common import ms_to_samples
-from onset_detection import bandpass_envelope, Detection
+from onset_detection import bandpass_envelope
 
 KICK_LOW_HZ = 30.0
 KICK_HIGH_HZ = 120.0
@@ -63,9 +63,3 @@ def kick_coincident_mask(times_ms: np.ndarray, kick_ms: np.ndarray) -> np.ndarra
     left = np.searchsorted(kick_ms, times_ms - KICK_WINDOW_BEFORE_MS, side="right")
     right = np.searchsorted(kick_ms, times_ms + KICK_WINDOW_AFTER_MS, side="left")
     return right > left
-
-
-def attach_kicks(
-    detection: Detection, kick: KickEnvelope, beat_ms: float
-) -> Detection:
-    return replace(detection, kick_ms=kick_peaks_ms(kick, beat_ms))

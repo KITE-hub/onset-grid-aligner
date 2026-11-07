@@ -26,11 +26,18 @@ SUITES = ("cli", "jitter", "loop", "tempo")
 
 
 def configure_paths(root: Path) -> None:
-    sys.path.insert(0, str(root / "batch"))
     sys.path.insert(0, str(root / "src"))
 
 
-def analyze_cli(audio: np.ndarray, bpm: float) -> tuple[float, float]:
+def expected_methods() -> tuple[str, ...]:
+    from onset_method import ENVELOPE_NAME
+    from onset_odf import OnsetKind
+    from onset_wavelet import WAVELET_NAMES
+
+    return (ENVELOPE_NAME, *(kind.value for kind in OnsetKind), *WAVELET_NAMES)
+
+
+def candidate_delays(audio: np.ndarray, bpm: float) -> dict[str, float]:
     from onset_config import DEFAULT_DRIFT_WINDOW_SEC, DEFAULT_HEAD_LEVEL, DEFAULT_HIGH_HZ, DEFAULT_LOW_HZ, FILTER_ZERO
     from onset_pipeline import run_pipeline, RunOptions
 
@@ -48,14 +55,25 @@ def analyze_cli(audio: np.ndarray, bpm: float) -> tuple[float, float]:
         path = Path(directory) / "synthetic.wav"
         sf.write(path, audio, synth.SAMPLE_RATE, subtype="PCM_24")
         run = run_pipeline(path, options)
-    delay = dict(run.candidates).get("fixed_grid")
-    return (None if delay is None else -delay), delay
+    return dict(run.candidates)
 
 
-def analyze_tempo(audio: np.ndarray, segments: tuple[tuple[int, float], ...]) -> float:
+def method_errors(delays: dict[str, float], offset: float) -> dict[str, float]:
+    missing = [name for name in expected_methods() if name not in delays]
+    if missing:
+        raise AssertionError(f"候補が出なかった方式: {', '.join(missing)}")
+    return {name: -delays[name] - offset for name in expected_methods()}
+
+
+def worst_error(errors: dict[str, float]) -> float:
+    return max(errors.values(), key=abs)
+
+
+def analyze_tempo(audio: np.ndarray, segments: tuple[tuple[int, float], ...]) -> dict[str, float]:
     import onset_grid_aligner as core
     from onset_odf import compute_onset_functions
     from onset_timing import TempoMap, TempoPoint
+    from onset_wavelet import compute_wavelet_functions
 
     points = []
     beats = 0.0
@@ -81,33 +99,47 @@ def analyze_tempo(audio: np.ndarray, segments: tuple[tuple[int, float], ...]) ->
         core.DEFAULT_HEAD_LEVEL,
         core.DEFAULT_DRIFT_WINDOW_SEC,
     )
-    functions = compute_onset_functions(audio, synth.SAMPLE_RATE)
-    kick = core.kick_envelope(audio, synth.SAMPLE_RATE)
-    detection = core.attach_kicks(detection, kick, config.grid_beat_ms)
-    warp = core.make_warp(tempo, config, detection)
-    return core.analyze_beat(detection, config, functions, warp).offset_ms
+    functions = (
+        *compute_onset_functions(
+            audio, synth.SAMPLE_RATE, core.DEFAULT_LOW_HZ, core.DEFAULT_HIGH_HZ, core.DEFAULT_HEAD_LEVEL
+        ),
+        *compute_wavelet_functions(
+            audio, synth.SAMPLE_RATE, core.DEFAULT_LOW_HZ, core.DEFAULT_HIGH_HZ, core.DEFAULT_HEAD_LEVEL
+        ),
+    )
+    sources = core.method_sources(detection, core.DEFAULT_HEAD_LEVEL, functions)
+    kick_ms = core.kick_peaks_ms(core.kick_envelope(audio, synth.SAMPLE_RATE), config.grid_beat_ms)
+    methods = core.analyze_methods(sources, config, kick_ms, tempo)
+    return dict(core.delay_candidates(methods, config.layout, duration_ms))
 
 
-def cli_error(pattern: str, bpm: float, offset: float, seconds: float, jitter: float) -> float:
+def cli_errors(pattern: str, bpm: float, offset: float, seconds: float, jitter: float) -> dict[str, float]:
     audio = synth.render(pattern, synth.constant_segments(bpm, seconds), offset, jitter)
-    measured = analyze_cli(audio, bpm)[0]
-    if measured is None:
-        raise AssertionError(
-            f"{pattern} {bpm:g} BPM: 合成音源のオフセット推定が保留されました"
-        )
-    return measured - offset
+    return method_errors(candidate_delays(audio, bpm), offset)
 
 
-def tempo_error(pattern: str, offset: float) -> float:
+def drift_errors(pattern: str, true_bpm: float, analysis_bpm: float, offset: float, seconds: float) -> dict[str, float]:
+    audio = synth.render(pattern, synth.constant_segments(true_bpm, seconds), offset)
+    slope = 1.0 - true_bpm / analysis_bpm
+    midpoint_ms = audio.shape[0] * 1000.0 / synth.SAMPLE_RATE / 2.0
+    expected_phase = offset + (midpoint_ms - offset) * slope
+    return method_errors(candidate_delays(audio, analysis_bpm), expected_phase)
+
+
+def tempo_errors(pattern: str, offset: float) -> dict[str, float]:
     audio = synth.render(pattern, TEMPO_SEGMENTS, offset)
-    return analyze_tempo(audio, TEMPO_SEGMENTS) - offset
+    return method_errors(analyze_tempo(audio, TEMPO_SEGMENTS), offset)
 
 
 def loop_error(pattern: str, bpm: float, offset: float, seconds: float) -> tuple[float, float]:
     audio = synth.render(pattern, synth.constant_segments(bpm, seconds), offset)
-    measured, delay = analyze_cli(audio, bpm)
-    residual, _ = analyze_cli(synth.shift_audio(audio, delay), bpm)
-    return measured - offset, residual
+    delays = candidate_delays(audio, bpm)
+    errors = method_errors(delays, offset)
+    residuals = {}
+    for name in expected_methods():
+        after = candidate_delays(synth.shift_audio(audio, delays[name]), bpm)
+        residuals[name] = -after[name]
+    return worst_error(errors), worst_error(residuals)
 
 
 def format_error(error: float, tolerance: float) -> str:
@@ -117,10 +149,10 @@ def format_error(error: float, tolerance: float) -> str:
 def run_grid(suite: str, args: argparse.Namespace) -> int:
     jitter = JITTER_MS if suite == "jitter" else 0.0
     failures = 0
-    print(f"[{suite}] 列: 真値オフセット {', '.join(f'{v:g}' for v in CLI_OFFSETS)} ms / 値は 推定-真値 (ms), * は許容超過")
+    print(f"[{suite}] 列: 真値オフセット {', '.join(f'{v:g}' for v in CLI_OFFSETS)} ms / 値は 全方式のうち最大の 推定-真値 (ms), * は許容超過")
     for pattern in CLI_PATTERNS:
         for bpm in CLI_BPMS:
-            errors = [cli_error(pattern, bpm, offset, args.seconds, jitter) for offset in CLI_OFFSETS]
+            errors = [worst_error(cli_errors(pattern, bpm, offset, args.seconds, jitter)) for offset in CLI_OFFSETS]
             failures += sum(abs(error) > args.tolerance_ms for error in errors)
             cells = " ".join(f"{format_error(error, args.tolerance_ms):>7s}" for error in errors)
             print(f"{pattern:12s} {bpm:5.1f}BPM | {cells}", flush=True)
@@ -144,7 +176,7 @@ def run_tempo(args: argparse.Namespace) -> int:
     failures = 0
     print(f"[tempo] テンポ変化 {TEMPO_SEGMENTS} / 列: 真値 {', '.join(f'{v:g}' for v in TEMPO_OFFSETS)} ms")
     for pattern in TEMPO_PATTERNS:
-        errors = [tempo_error(pattern, offset) for offset in TEMPO_OFFSETS]
+        errors = [worst_error(tempo_errors(pattern, offset)) for offset in TEMPO_OFFSETS]
         failures += sum(abs(error) > args.tolerance_ms for error in errors)
         cells = " ".join(f"{format_error(error, args.tolerance_ms):>7s}" for error in errors)
         print(f"{pattern:12s} | {cells}", flush=True)

@@ -1,15 +1,29 @@
 import numpy as np
 import pytest
 
-from onset_config import DEFAULT_HIGH_HZ, DEFAULT_LOW_HZ
+from onset_config import DEFAULT_HEAD_LEVEL
 from onset_odf import (
     adaptive_threshold_events,
     chunk_functions,
     compute_onset_functions,
     frame_times_ms,
-    ODF_HIGH_HZ,
-    ODF_LOW_HZ,
+    head_shift_frames,
+    OnsetKind,
+    rise_position,
 )
+
+SAMPLE_RATE = 44100
+BAND = (1000.0, 12000.0)
+
+
+def make_bursts(antiphase=False):
+    rng = np.random.default_rng(4)
+    left = np.zeros(2 * SAMPLE_RATE, dtype=np.float32)
+    burst_length = int(0.008 * SAMPLE_RATE)
+    interval = int(0.1 * SAMPLE_RATE)
+    for start in range(int(0.1 * SAMPLE_RATE), left.size - burst_length, interval):
+        left[start : start + burst_length] = rng.standard_normal(burst_length)
+    return np.column_stack((left, -left if antiphase else left))
 
 
 def test_complex_domain_prediction_is_quiet_for_steady_complex_tones():
@@ -36,22 +50,14 @@ def test_complex_function_selects_local_peaks_above_moving_median():
 
     assert events is not None
     assert events.times_ms.size == 1
-    expected = frame_times_ms(np.asarray([1000]), 8, 1, 1000)[0]
-    assert events.times_ms[0] == pytest.approx(expected)
+    before_peak = frame_times_ms(np.asarray([999]), 8, 1, 1000)[0]
+    peak = frame_times_ms(np.asarray([1000]), 8, 1, 1000)[0]
+    assert before_peak < events.times_ms[0] <= peak
     assert events.weights[0] > 0.5
 
 
 def test_complex_events_survive_antiphase_stereo_channels():
-    sample_rate = 44100
-    rng = np.random.default_rng(4)
-    left = np.zeros(2 * sample_rate, dtype=np.float32)
-    burst_length = int(0.008 * sample_rate)
-    interval = int(0.1 * sample_rate)
-    for start in range(int(0.1 * sample_rate), left.size - burst_length, interval):
-        left[start : start + burst_length] = rng.standard_normal(burst_length)
-    samples = np.column_stack((left, -left))
-
-    functions = compute_onset_functions(samples, sample_rate)
+    functions = compute_onset_functions(make_bursts(antiphase=True), SAMPLE_RATE, *BAND)
     complex_function = next(
         (function for function in functions if function.name == "複素領域"), None
     )
@@ -60,5 +66,47 @@ def test_complex_events_survive_antiphase_stereo_channels():
     assert complex_function.times_ms.size >= 5
 
 
-def test_envelope_and_spectral_detectors_share_the_analysis_band():
-    assert (DEFAULT_LOW_HZ, DEFAULT_HIGH_HZ) == (ODF_LOW_HZ, ODF_HIGH_HZ)
+def test_percussive_bursts_yield_events_for_every_onset_kind():
+    functions = compute_onset_functions(make_bursts(), SAMPLE_RATE, *BAND)
+
+    assert {function.name for function in functions} == {kind.value for kind in OnsetKind}
+    assert all(function.times_ms.size >= 5 for function in functions)
+
+
+def test_silence_produces_no_onset_functions():
+    silence = np.zeros((SAMPLE_RATE, 2), dtype=np.float32)
+
+    assert compute_onset_functions(silence, SAMPLE_RATE, *BAND) == ()
+
+
+def test_audio_shorter_than_one_frame_produces_no_onset_functions():
+    short = np.zeros((100, 2), dtype=np.float32)
+
+    assert compute_onset_functions(short, SAMPLE_RATE, *BAND) == ()
+
+
+def ramp_strength():
+    values = np.zeros(200)
+    values[100:111] = np.linspace(0.0, 1.0, 11)
+    return values
+
+
+@pytest.mark.parametrize(("level", "position"), [(0.5, 105.0), (0.25, 102.5)])
+def test_rise_position_interpolates_the_level_crossing(level, position):
+    assert rise_position(ramp_strength(), 110, 30, level) == pytest.approx(position)
+
+
+def test_rise_position_of_a_flat_curve_is_the_peak():
+    assert rise_position(np.ones(50), 40, 30, 0.5) == 40.0
+
+
+def test_head_shift_is_zero_at_the_default_level():
+    shift = head_shift_frames(ramp_strength(), np.array([110]), 30, DEFAULT_HEAD_LEVEL)
+
+    np.testing.assert_array_equal(shift, [0.0])
+
+
+def test_head_shift_moves_later_for_a_higher_level():
+    shift = head_shift_frames(ramp_strength(), np.array([110]), 30, 0.5)
+
+    assert shift == pytest.approx([3.5])

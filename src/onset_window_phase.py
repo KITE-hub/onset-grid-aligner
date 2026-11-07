@@ -7,7 +7,6 @@ from scipy import stats
 
 from onset_common import window_bounds, wrap_symmetric
 from onset_config import AnalysisConfig, DEFAULT_DRIFT_WINDOW_SEC
-from onset_detection import Heads
 from onset_drift import DriftFit, fit_direct
 from onset_groups import GroupAnalysis
 from onset_phase import (
@@ -32,11 +31,6 @@ class WindowPhases:
     centers_ms: np.ndarray
     phases_ms: np.ndarray
     counts: np.ndarray
-
-
-@dataclass(frozen=True)
-class EventSupport:
-    stability: float | None
 
 
 def window_phases(
@@ -73,14 +67,6 @@ def fit_drift(windows: WindowPhases | None, period: float) -> DriftFit | None:
     return DriftFit(float(intercept), float(slope), float(low), float(high), reference)
 
 
-def regression_trend_ms(
-    times_ms: np.ndarray, drift: DriftFit | None, uses_regression: bool
-) -> np.ndarray:
-    if not uses_regression or drift is None:
-        return np.zeros(times_ms.shape)
-    return drift.slope * (times_ms - drift.reference_ms)
-
-
 def support_window_ms(config: AnalysisConfig) -> float:
     seconds = (
         config.drift_window_sec
@@ -113,21 +99,6 @@ def timeline_stability(
     return supported_window_ratio(times_ms[order], inside, period, window_ms)
 
 
-def event_support(
-    selected: Heads,
-    conclusion_ms: float,
-    drift: DriftFit | None,
-    uses_regression: bool,
-    period: float,
-    window_ms: float,
-) -> EventSupport:
-    trend = regression_trend_ms(selected.peaks_ms, drift, uses_regression)
-    offsets_ms = selected.heads_ms - trend - conclusion_ms
-    return EventSupport(
-        timeline_stability(selected.peaks_ms, offsets_ms, period, window_ms)
-    )
-
-
 def estimate_drift(
     heads_ms: np.ndarray,
     windows: WindowPhases | None,
@@ -144,15 +115,3 @@ def estimate_drift(
         config.drift_window_sec * 1000.0,
     )
     return direct if direct is not None else fit_drift(windows, period)
-
-
-def regression_phase(fit: DriftFit, period: float) -> float:
-    return float(wrap_symmetric(fit.phase_at(fit.reference_ms), period))
-
-
-def resolve_phase(
-    fit: DriftFit | None, fallback_ms: float, period: float
-) -> tuple[float, bool]:
-    if fit is not None and fit.significant:
-        return regression_phase(fit, period), True
-    return fallback_ms, False

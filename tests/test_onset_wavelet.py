@@ -1,7 +1,6 @@
 import numpy as np
 import pytest
 
-from onset_render_summary import render_delay_candidates
 from onset_wavelet import (
     compute_wavelet_functions,
     COARSE_SCALE_NAME,
@@ -12,6 +11,7 @@ from onset_wavelet import (
 )
 
 SAMPLE_RATE = 44100
+BAND = (1000.0, 12000.0)
 BURST_MS = 8.0
 DURATION_SEC = 3.0
 STARTS_MS = np.asarray([100.0 + 150.0 * index for index in range(18)])
@@ -39,9 +39,14 @@ def by_name(functions):
 
 
 def test_usable_centers_follow_the_nyquist_ratio():
-    assert usable_centers(44100) == WAVELET_CENTERS_HZ
-    assert usable_centers(8000) == (2000.0,)
-    assert usable_centers(4000) == ()
+    assert usable_centers(44100, 1000.0, 12000.0) == WAVELET_CENTERS_HZ
+    assert usable_centers(8000, 1000.0, 12000.0) == (2000.0,)
+    assert usable_centers(4000, 1000.0, 12000.0) == ()
+
+
+def test_usable_centers_stay_inside_the_requested_band():
+    assert usable_centers(44100, 3000.0, 7000.0) == (3000.0, 4500.0, 6500.0)
+    assert usable_centers(44100, 10000.0, 12000.0) == ()
 
 
 @pytest.mark.parametrize("name", [MULTI_SCALE_NAME, COARSE_SCALE_NAME])
@@ -55,27 +60,18 @@ def test_usable_centers_follow_the_nyquist_ratio():
     ids=["same-phase", "antiphase", "velocity-range"],
 )
 def test_events_land_on_attack_starts_without_early_events(samples, name):
-    function = by_name(compute_wavelet_functions(samples, SAMPLE_RATE))[name]
+    function = by_name(compute_wavelet_functions(samples, SAMPLE_RATE, *BAND))[name]
 
     assert function.times_ms.size == STARTS_MS.size
     assert np.abs(attack_errors(function)).max() < TOLERANCE_MS
 
 
 def test_mono_input_is_accepted():
-    functions = compute_wavelet_functions(make_bursts()[:, 0], SAMPLE_RATE)
+    functions = compute_wavelet_functions(make_bursts()[:, 0], SAMPLE_RATE, *BAND)
 
     assert tuple(function.name for function in functions) == WAVELET_NAMES
 
 
 def test_silence_and_empty_audio_produce_no_functions():
-    assert compute_wavelet_functions(np.zeros((SAMPLE_RATE, 2)), SAMPLE_RATE) == ()
-    assert compute_wavelet_functions(np.zeros((0, 2)), SAMPLE_RATE) == ()
-
-
-def test_wavelet_candidates_are_listed_in_the_report():
-    candidates = tuple((name, 1.0) for name in WAVELET_NAMES)
-
-    report = "\n".join(render_delay_candidates(candidates))
-
-    for name in WAVELET_NAMES:
-        assert f"  {name}: +1.00 ms" in report
+    assert compute_wavelet_functions(np.zeros((SAMPLE_RATE, 2)), SAMPLE_RATE, *BAND) == ()
+    assert compute_wavelet_functions(np.zeros((0, 2)), SAMPLE_RATE, *BAND) == ()

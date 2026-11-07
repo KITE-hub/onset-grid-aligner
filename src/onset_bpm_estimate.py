@@ -5,8 +5,8 @@ from dataclasses import dataclass
 import numpy as np
 from scipy import fft
 
-from onset_config import DEFAULT_HEAD_LEVEL, MAX_BPM, MIN_BPM
-from onset_detection import Detection
+from onset_config import MAX_BPM, MIN_BPM
+from onset_odf import OnsetFunction
 
 ESTIMATE_MIN_BPM = 60.0
 ESTIMATE_MAX_BPM = 260.0
@@ -38,17 +38,34 @@ class BpmEstimate:
     octaves: tuple[tuple[float, float], ...]
 
 
-def attack_events(detection: Detection) -> OnsetEvents:
-    heads = detection.heads[DEFAULT_HEAD_LEVEL]
-    return OnsetEvents(heads.heads_ms, heads.strengths)
+def method_events(sources: tuple[OnsetFunction, ...]) -> tuple[OnsetEvents, ...]:
+    events = []
+    for source in sources:
+        keep = (source.times_ms >= 0.0) & (source.weights > 0.0)
+        if np.count_nonzero(keep) >= ESTIMATE_MIN_EVENTS:
+            events.append(OnsetEvents(source.times_ms[keep], source.weights[keep]))
+    return tuple(events)
 
 
-def onset_spectrum(events: OnsetEvents) -> tuple[np.ndarray, np.ndarray]:
-    indices = np.round(events.times_ms / ESTIMATE_BIN_MS).astype(int)
-    train = np.bincount(indices, weights=events.weights)
-    train = train - train.mean()
-    size = fft.next_fast_len(train.size * ESTIMATE_PAD_FACTOR, real=True)
-    magnitude = np.abs(fft.rfft(train, size))
+def unit_weights(events: OnsetEvents) -> np.ndarray:
+    return events.weights / events.weights.sum()
+
+
+def train_length(events_by_method: tuple[OnsetEvents, ...]) -> int:
+    latest_ms = max(float(events.times_ms.max()) for events in events_by_method)
+    return int(round(latest_ms / ESTIMATE_BIN_MS)) + 1
+
+
+def onset_spectrum(
+    events_by_method: tuple[OnsetEvents, ...]
+) -> tuple[np.ndarray, np.ndarray]:
+    length = train_length(events_by_method)
+    size = fft.next_fast_len(length * ESTIMATE_PAD_FACTOR, real=True)
+    magnitude = np.zeros(size // 2 + 1)
+    for events in events_by_method:
+        indices = np.round(events.times_ms / ESTIMATE_BIN_MS).astype(int)
+        train = np.bincount(indices, weights=unit_weights(events), minlength=length)
+        magnitude += np.abs(fft.rfft(train - train.mean(), size))
     frequencies = fft.rfftfreq(size, ESTIMATE_BIN_MS / 1000.0)
     return frequencies, magnitude
 
@@ -87,13 +104,9 @@ def dominance_ratio(
     return float(salience[best_index] / rivals.max())
 
 
-def refine_bpm(events: OnsetEvents, center: float) -> float:
-    grid = np.arange(
-        center - ESTIMATE_FINE_SPAN_BPM,
-        center + ESTIMATE_FINE_SPAN_BPM + ESTIMATE_FINE_STEP_BPM / 2.0,
-        ESTIMATE_FINE_STEP_BPM,
-    )
+def refine_scores(events: OnsetEvents, grid: np.ndarray) -> np.ndarray:
     seconds = events.times_ms / 1000.0
+    weights = unit_weights(events)
     scores = np.empty(grid.size)
     for start in range(0, grid.size, ESTIMATE_FINE_CHUNK):
         chunk = grid[start : start + ESTIMATE_FINE_CHUNK]
@@ -101,9 +114,19 @@ def refine_bpm(events: OnsetEvents, center: float) -> float:
         current = base
         score = np.zeros(chunk.size)
         for _ in range(ESTIMATE_FINE_HARMONICS):
-            score += np.abs(current @ events.weights)
+            score += np.abs(current @ weights)
             current = current * base
         scores[start : start + chunk.size] = score
+    return scores
+
+
+def refine_bpm(events_by_method: tuple[OnsetEvents, ...], center: float) -> float:
+    grid = np.arange(
+        center - ESTIMATE_FINE_SPAN_BPM,
+        center + ESTIMATE_FINE_SPAN_BPM + ESTIMATE_FINE_STEP_BPM / 2.0,
+        ESTIMATE_FINE_STEP_BPM,
+    )
+    scores = np.sum([refine_scores(events, grid) for events in events_by_method], axis=0)
     return float(grid[int(np.argmax(scores))])
 
 
@@ -121,10 +144,10 @@ def octave_candidates(
 
 
 def estimate_bpm(
-    detection: Detection, min_bpm: float, max_bpm: float
+    sources: tuple[OnsetFunction, ...], min_bpm: float, max_bpm: float
 ) -> BpmEstimate:
-    events = attack_events(detection)
-    if events.times_ms.size < ESTIMATE_MIN_EVENTS:
+    events = method_events(sources)
+    if not events:
         raise ValueError("BPMを推定できるだけのオンセットを検出できませんでした")
     frequencies, magnitude = onset_spectrum(events)
     bpms = np.arange(min_bpm, max_bpm, ESTIMATE_COARSE_STEP_BPM)

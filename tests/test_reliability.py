@@ -1,15 +1,10 @@
-import sys
-from pathlib import Path
-from types import SimpleNamespace
-
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "batch"))
-
-from batch_csv import reliability_cells
+from onset_drift import DriftFit
 from onset_grid import GridLayout, phase_support, PhaseSupport
-from onset_reliability import MethodReliability, reliability_of
+from onset_method import MethodEstimate
+from onset_reliability import reliability_of
 from onset_window_phase import timeline_stability
 
 LAYOUT = GridLayout(120.0)
@@ -59,76 +54,33 @@ def test_timeline_stability_is_unavailable_for_short_material():
     )
 
 
-def make_analysis(checks, grid_support, stability=1.0):
-    return SimpleNamespace(
-        grid_support=grid_support,
-        stability=stability,
-        cross=SimpleNamespace(checks=checks) if checks else None,
-        drift=None,
-        uses_regression=False,
+def make_estimate(name, drift=None):
+    return MethodEstimate(name, 0.0, drift, PhaseSupport(10, 5, 0.5), 0.5)
+
+
+def test_reliability_lists_every_method_in_estimate_order():
+    estimates = (
+        make_estimate("envelope"),
+        make_estimate("HFC"),
+        make_estimate("複素領域"),
     )
 
-
-def make_check(name, phase_ms):
-    return SimpleNamespace(
-        name=name,
-        phase_ms=phase_ms,
-        support=PhaseSupport(10, 5, 0.5),
-        stability=0.5,
-    )
-
-
-def test_reliability_reports_how_far_each_method_was_moved_to_the_shared_branch():
-    alignment = SimpleNamespace(phase_ms=0.0, lattice_ms=LAYOUT.comb_lattice_ms)
-    analysis = make_analysis(
-        (make_check("HFC", 0.2), make_check("複素領域", -20.0)),
-        PhaseSupport(100, 90, 0.1),
-    )
-
-    reliability = reliability_of(analysis, alignment, LAYOUT)
+    reliability = reliability_of(estimates)
 
     assert [method.name for method in reliability.methods] == [
-        "fixed_grid",
+        "envelope",
         "HFC",
         "複素領域",
     ]
-    assert reliability.method("fixed_grid").branch_shifted is False
-    assert reliability.method("HFC").branch_shifted is False
-    assert reliability.method("複素領域").branch_shift_ms == pytest.approx(
-        -20.8333, abs=1e-3
-    )
+    assert reliability.method("HFC").support == PhaseSupport(10, 5, 0.5)
+    assert reliability.method("HFC").stability == 0.5
+    assert reliability.method("missing") is None
 
 
-def test_reliability_omits_fixed_grid_without_an_alignment():
-    analysis = make_analysis((make_check("HFC", 0.2),), PhaseSupport(100, 90, 0.1))
+def test_reliability_reports_each_methods_own_drift_slope_per_minute():
+    drift = DriftFit(0.0, 0.001, 0.0009, 0.0011, 0.0)
 
-    reliability = reliability_of(analysis, None, LAYOUT)
+    reliability = reliability_of((make_estimate("envelope", drift), make_estimate("HFC")))
 
-    assert [method.name for method in reliability.methods] == ["HFC"]
-    assert reliability.methods[0].branch_shift_ms == pytest.approx(0.0)
-
-
-def test_csv_cells_join_methods_in_candidate_order():
-    methods = {
-        "fixed_grid": MethodReliability("fixed_grid", PhaseSupport(100, 80, 0.5), 1.0, 0.0),
-        "複素領域": MethodReliability("複素領域", PhaseSupport(50, 20, None), None, -20.83),
-    }
-
-    cells = reliability_cells(methods)
-
-    assert cells["support_mad_ms"] == "0.50/NA/NA/NA/NA/NA"
-    assert cells["support_ratio"] == "0.80/NA/0.40/NA/NA/NA"
-    assert cells["attack_counts"] == "100/NA/50/NA/NA/NA"
-    assert cells["stabilities"] == "1.00/NA/NA/NA/NA/NA"
-    assert cells["branch_note"] == "STFT_complex は -20.83 ms 補正"
-
-
-def test_csv_branch_note_lists_every_shifted_method():
-    methods = {
-        "複素領域": MethodReliability("複素領域", PhaseSupport(1, 1, 0.0), None, 20.33),
-        "HFC": MethodReliability("HFC", PhaseSupport(1, 1, 0.0), None, 20.33),
-    }
-
-    note = reliability_cells(methods)["branch_note"]
-
-    assert note == "STFT_complex は +20.33 ms 補正, STFT_HFC は +20.33 ms 補正"
+    assert reliability.method("envelope").drift_slope_ms_per_min == pytest.approx(60.0)
+    assert reliability.method("HFC").drift_slope_ms_per_min is None

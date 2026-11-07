@@ -7,15 +7,8 @@ import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 from scipy import fft, ndimage, signal
 
-from onset_config import (
-    ANALYSIS_HIGH_HZ,
-    ANALYSIS_LOW_HZ,
-    MIN_ONSET_GAP_MS,
-    USABLE_NYQUIST_RATIO,
-)
+from onset_config import DEFAULT_HEAD_LEVEL, MIN_ONSET_GAP_MS, USABLE_NYQUIST_RATIO
 
-ODF_LOW_HZ = ANALYSIS_LOW_HZ
-ODF_HIGH_HZ = ANALYSIS_HIGH_HZ
 ODF_WINDOW_MS = 6.0
 ODF_HOP_MS = 1.0
 ODF_LAG_FRAMES = 2
@@ -30,7 +23,7 @@ ODF_FLOOR_RATIO = 0.1
 ODF_ACTIVE_RATIO = 0.15
 ODF_COMPLEX_THRESHOLD_WINDOW_MS = 100.0
 ODF_COMPLEX_THRESHOLD_RATIO = 1.5
-ODF_COMPLEX_ONSET_LOOKBACK_MS = MIN_ONSET_GAP_MS
+ODF_HEAD_LOOKBACK_MS = MIN_ONSET_GAP_MS
 
 FOLD_BIN_MS = 0.1
 FOLD_SIGMA_MS = 1.0
@@ -141,6 +134,45 @@ def frame_times_ms(
     return position * 1000.0 / sample_rate
 
 
+def lookback_frames(sample_rate: int, hop: int) -> int:
+    return max(1, int(round(ODF_HEAD_LOOKBACK_MS * sample_rate / (1000.0 * hop))))
+
+
+def rise_position(
+    values: np.ndarray, peak: int, lookback: int, level: float
+) -> float:
+    start = max(0, peak - lookback)
+    window = values[start : peak + 1]
+    base = float(window.min())
+    top = float(values[peak])
+    if top <= base:
+        return float(peak)
+    target = base + level * (top - base)
+    below = np.flatnonzero(window < target)
+    if below.size == 0:
+        return float(start)
+    lower = start + int(below[-1])
+    first = float(values[lower])
+    second = float(values[lower + 1])
+    return lower + (target - first) / (second - first)
+
+
+def head_shift_frames(
+    values: np.ndarray, peaks: np.ndarray, lookback: int, level: float
+) -> np.ndarray:
+    if level == DEFAULT_HEAD_LEVEL:
+        return np.zeros(peaks.size)
+    return np.fromiter(
+        (
+            rise_position(values, int(peak), lookback, level)
+            - rise_position(values, int(peak), lookback, DEFAULT_HEAD_LEVEL)
+            for peak in peaks
+        ),
+        dtype=float,
+        count=peaks.size,
+    )
+
+
 def threshold_crossing_frames(
     peaks: np.ndarray,
     values: np.ndarray,
@@ -249,19 +281,32 @@ def peak_frames(
 
 
 def fixed_threshold_events(
-    name: str, values: np.ndarray, size: int, hop: int, sample_rate: int
+    name: str,
+    values: np.ndarray,
+    size: int,
+    hop: int,
+    sample_rate: int,
+    head_level: float = DEFAULT_HEAD_LEVEL,
 ) -> OnsetFunction | None:
     strength = np.clip(normalized_strength(values, sample_rate, hop), 0.0, 1.0)
     active = peak_frames(strength, ODF_ACTIVE_RATIO, sample_rate, hop)
     if active.size == 0:
         return None
+    frames = active + head_shift_frames(
+        strength, active, lookback_frames(sample_rate, hop), head_level
+    )
     return OnsetFunction(
-        name, frame_times_ms(active, size, hop, sample_rate), strength[active]
+        name, frame_times_ms(frames, size, hop, sample_rate), strength[active]
     )
 
 
 def adaptive_threshold_events(
-    name: str, values: np.ndarray, size: int, hop: int, sample_rate: int
+    name: str,
+    values: np.ndarray,
+    size: int,
+    hop: int,
+    sample_rate: int,
+    head_level: float = DEFAULT_HEAD_LEVEL,
 ) -> OnsetFunction | None:
     strength = normalized_strength(values, sample_rate, hop)
     window = max(
@@ -276,21 +321,24 @@ def adaptive_threshold_events(
     if active.size == 0:
         return None
     weights = np.maximum(strength[active] - threshold[active], 0.0)
-    lookback = max(
-        1,
-        int(round(ODF_COMPLEX_ONSET_LOOKBACK_MS * sample_rate / (1000.0 * hop))),
-    )
-    onset_frames = threshold_crossing_frames(active, strength, threshold, lookback)
+    lookback = lookback_frames(sample_rate, hop)
+    onset_frames = threshold_crossing_frames(
+        active, strength, threshold, lookback
+    ) + head_shift_frames(strength, active, lookback, head_level)
     return OnsetFunction(
         name, frame_times_ms(onset_frames, size, hop, sample_rate), weights
     )
 
 
 def compute_onset_functions(
-    samples: np.ndarray, sample_rate: int
+    samples: np.ndarray,
+    sample_rate: int,
+    low_hz: float,
+    high_hz: float,
+    head_level: float = DEFAULT_HEAD_LEVEL,
 ) -> tuple[OnsetFunction, ...]:
-    high_hz = min(ODF_HIGH_HZ, USABLE_NYQUIST_RATIO * sample_rate)
-    result = spectral_series(samples, sample_rate, ODF_LOW_HZ, high_hz)
+    ceiling_hz = min(high_hz, USABLE_NYQUIST_RATIO * sample_rate)
+    result = spectral_series(samples, sample_rate, low_hz, ceiling_hz)
     if result is None:
         return ()
     series, size, hop = result
@@ -299,7 +347,7 @@ def compute_onset_functions(
             adaptive_threshold_events
             if kind is OnsetKind.COMPLEX
             else fixed_threshold_events
-        )(kind.value, values, size, hop, sample_rate)
+        )(kind.value, values, size, hop, sample_rate, head_level)
         for kind, values in zip(OnsetKind, series)
     )
     return tuple(function for function in functions if function is not None)

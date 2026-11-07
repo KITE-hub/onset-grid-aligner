@@ -22,4 +22,5 @@ env/
 *.csv
 *.bat
 batch/
+tests/test_batch_*.py
 work/

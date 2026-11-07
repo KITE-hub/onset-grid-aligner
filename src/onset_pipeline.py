@@ -3,21 +3,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from onset_analysis import Analysis
 from onset_audio_io import (
     load_audio,
     readable_audio,
     validate_audio,
     validate_loaded_duration,
 )
-from onset_beat import analyze_beat, BeatAnalysis
 from onset_bpm_estimate import BpmEstimate, estimate_bpm
 from onset_config import AnalysisConfig, FILTER_CAUSAL
 from onset_decoder import decode_info, DecodeInfo
-from onset_detection import detect_attacks, Detection, head_levels
-from onset_grid import GridAlignment
-from onset_kick import attach_kicks, kick_envelope
-from onset_odf import compute_onset_functions
+from onset_detection import detect_attacks
+from onset_kick import kick_envelope, kick_peaks_ms
+from onset_method import analyze_methods, method_sources, MethodEstimate
+from onset_odf import compute_onset_functions, OnsetFunction
 from onset_resolution import DelayCandidates, delay_candidates
 from onset_wavelet import compute_wavelet_functions
 
@@ -37,18 +35,10 @@ class RunOptions:
 @dataclass(frozen=True)
 class AnalysisRun:
     config: AnalysisConfig
-    beat: BeatAnalysis
+    methods: tuple[MethodEstimate, ...]
     estimate: BpmEstimate | None
     decode: DecodeInfo | None
     candidates: DelayCandidates
-
-    @property
-    def analysis(self) -> Analysis:
-        return self.beat.analysis
-
-    @property
-    def alignment(self) -> GridAlignment | None:
-        return self.beat.alignment
 
 
 def config_from_options(options: RunOptions, bpm: float) -> AnalysisConfig:
@@ -62,11 +52,11 @@ def config_from_options(options: RunOptions, bpm: float) -> AnalysisConfig:
 
 
 def resolve_bpm(
-    options: RunOptions, detection: Detection
+    options: RunOptions, sources: tuple[OnsetFunction, ...]
 ) -> tuple[float, BpmEstimate | None]:
     if options.bpm is not None:
         return options.bpm, None
-    estimate = estimate_bpm(detection, options.bpm_min, options.bpm_max)
+    estimate = estimate_bpm(sources, options.bpm_min, options.bpm_max)
     return estimate.bpm, estimate
 
 
@@ -82,21 +72,23 @@ def run_pipeline(audio_path: Path, options: RunOptions) -> AnalysisRun:
         sample_rate,
         options.low_hz,
         options.high_hz,
-        head_levels(options.head_level),
+        (options.head_level,),
         causal,
     )
     functions = (
-        *compute_onset_functions(samples, sample_rate),
-        *compute_wavelet_functions(samples, sample_rate),
+        *compute_onset_functions(
+            samples, sample_rate, options.low_hz, options.high_hz, options.head_level
+        ),
+        *compute_wavelet_functions(
+            samples, sample_rate, options.low_hz, options.high_hz, options.head_level
+        ),
     )
-    bpm, estimate = resolve_bpm(options, attacks)
+    sources = method_sources(attacks, options.head_level, functions)
+    bpm, estimate = resolve_bpm(options, sources)
     config = config_from_options(options, bpm)
-    kick = kick_envelope(samples, sample_rate)
-    beat = analyze_beat(attach_kicks(attacks, kick, config.grid_beat_ms), config, functions)
+    kick_ms = kick_peaks_ms(kick_envelope(samples, sample_rate), config.grid_beat_ms)
+    methods = analyze_methods(sources, config, kick_ms)
     candidates = delay_candidates(
-        beat.analysis,
-        beat.alignment,
-        config.layout,
-        samples.shape[0] * 1000.0 / sample_rate,
+        methods, config.layout, samples.shape[0] * 1000.0 / sample_rate
     )
-    return AnalysisRun(config, beat, estimate, decode, candidates)
+    return AnalysisRun(config, methods, estimate, decode, candidates)

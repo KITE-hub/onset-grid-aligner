@@ -47,7 +47,6 @@ class LocalCap:
 
 @dataclass(frozen=True)
 class Detection:
-    kick_ms: np.ndarray
     sample_rate: int
     heads: dict[float, Heads]
 
@@ -204,7 +203,6 @@ def detect_attacks(
         else 0.0
     )
     return Detection(
-        np.empty(0),
         sample_rate,
         build_heads(envelope, peaks, strengths, sample_rate, levels, delay_ms),
     )

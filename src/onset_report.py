@@ -25,21 +25,33 @@ def render_method_reliability(method: MethodReliability) -> str:
 
 
 def render_reliability(reliability: Reliability) -> list[str]:
-    lines = ["[信頼性の目安: 方式ごと]"]
-    lines.extend(render_method_reliability(method) for method in reliability.methods)
-    if reliability.drift_slope_ms_per_min is not None:
-        lines.append(
-            f"ドリフト補正: 適用 (傾き {signed(reliability.drift_slope_ms_per_min)} ms/分、"
-            "各候補は音源の中央時点に換算)"
-        )
-    return lines
+    return [
+        "[信頼性の目安: 方式ごと]",
+        *(render_method_reliability(method) for method in reliability.methods),
+    ]
+
+
+def render_drift(reliability: Reliability) -> list[str]:
+    applied = [
+        method
+        for method in reliability.methods
+        if method.drift_slope_ms_per_min is not None
+    ]
+    if not applied:
+        return []
+    return [
+        "[ドリフト補正: 方式ごと、各候補は音源の中央時点に換算]",
+        *(
+            f"  {method.name}: 適用 (傾き {signed(method.drift_slope_ms_per_min)} ms/分)"
+            for method in applied
+        ),
+    ]
 
 
 def render_decoder_variants(run: AnalysisRun) -> list[str]:
     decode = run.decode
     if decode is None:
         return []
-    fixed_grid = dict(run.candidates).get("fixed_grid")
     lines = [
         "[参考: デコーダ遅延の仮定別の補正量(上の補正量を上書きしない)]",
         f"  {DECODER_EXPLANATIONS[decode.suffix]}",
@@ -48,22 +60,22 @@ def render_decoder_variants(run: AnalysisRun) -> list[str]:
         shift_ms = (
             (variant.skip_samples - decode.applied_skip) * 1000.0 / decode.sample_rate
         )
-        reference = (
-            "" if fixed_grid is None else f" / fixed_grid {signed(fixed_grid + shift_ms)} ms"
+        references = "".join(
+            f" / {name} {signed(value + shift_ms)} ms" for name, value in run.candidates
         )
         marker = " <- 現在のデコード補正" if variant.skip_samples == decode.applied_skip else ""
         lines.append(
             f"  {variant.label}: 先頭 {variant.skip_samples} サンプルを削除"
-            f" / 全候補に {signed(shift_ms)} ms を加算{reference}{marker}"
+            f" / 全候補に {signed(shift_ms)} ms を加算{references}{marker}"
         )
     return lines
 
 
 def render_compact_report(run: AnalysisRun) -> list[str]:
-    reliability = reliability_of(run.analysis, run.alignment, run.config.layout)
-    shifts = {method.name: method.branch_shift_ms for method in reliability.methods}
-    lines = render_delay_candidates(run.candidates, shifts)
+    reliability = reliability_of(run.methods)
+    lines = render_delay_candidates(run.candidates)
     lines.extend(render_reliability(reliability))
+    lines.extend(render_drift(reliability))
     lines.extend(render_decoder_variants(run))
     if (
         run.estimate is not None
